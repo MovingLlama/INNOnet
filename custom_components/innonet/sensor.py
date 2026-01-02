@@ -24,6 +24,10 @@ async def async_setup_entry(
         InnonetTariffPriceSensor(coordinator, entry),
     ]
 
+    # Add 24 Forecast Sensors (1h to 24h)
+    for hour_offset in range(1, 25):
+        entities.append(InnonetPriceForecastSensor(coordinator, entry, hour_offset))
+
     async_add_entities(entities)
 
 
@@ -63,7 +67,7 @@ class InnonetTariffSignalSensor(InnonetBaseSensor):
         if not data:
             return None
         
-        # Signal values: 0, 1, -1
+        # Signal values: 0, 1, -1. Expecting 'v' after normalization.
         val = data.get("v")
         
         if val == 0:
@@ -84,19 +88,19 @@ class InnonetTariffSignalSensor(InnonetBaseSensor):
         return {
             "raw_value": data.get("v"),
             "timestamp": data.get("t"),
-            "flag": data.get("f") # Data quality flag
+            "flag": data.get("f")
         }
 
 
 class InnonetTariffPriceSensor(InnonetBaseSensor):
-    """Sensor for the INNOnet Tariff Price."""
+    """Sensor for the current INNOnet Tariff Price."""
 
     def __init__(self, coordinator, entry):
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.data['zpn']}_innonet_price"
         self._attr_name = "Tariff Price"
         self._attr_icon = "mdi:currency-eur"
-        self._attr_native_unit_of_measurement = "EUR/kWh" # Assuming EUR based on context
+        self._attr_native_unit_of_measurement = "EUR/kWh"
         self._attr_device_class = SensorDeviceClass.MONETARY
 
     @property
@@ -105,14 +109,54 @@ class InnonetTariffPriceSensor(InnonetBaseSensor):
         data = self.coordinator.data.get("innonet_tariff")
         if not data:
             return None
-        
-        # Check flags for missing values (Flag 19 mentioned in docs)
-        # However, we simply return the 'v' (value) if present.
         return data.get("v")
 
+
+class InnonetPriceForecastSensor(InnonetBaseSensor):
+    """Sensor for INNOnet Tariff Price Forecast (+X hours)."""
+
+    def __init__(self, coordinator, entry, hour_offset: int):
+        super().__init__(coordinator, entry)
+        self.hour_offset = hour_offset
+        # Unique ID distinguishes the hours: e.g. ..._price_forecast_1h
+        self._attr_unique_id = f"{entry.data['zpn']}_price_forecast_{hour_offset}h"
+        self._attr_name = f"Price +{hour_offset}h"
+        self._attr_icon = "mdi:clock-time-three-outline"
+        self._attr_native_unit_of_measurement = "EUR/kWh"
+        self._attr_device_class = SensorDeviceClass.MONETARY
+
     @property
-    def available(self) -> bool:
-        """Return if entity is available."""
-        # If the API returns valid structure but no price data (e.g. only signal),
-        # this sensor might be temporarily unavailable or just showing None.
-        return super().available
+    def native_value(self) -> float | None:
+        """Return the forecast value from the list."""
+        forecast_list = self.coordinator.data.get("price_forecast")
+        if not forecast_list:
+            return None
+        
+        # forecast_list contains 24 items (usually).
+        # Index 0 is +1h (since we queried from now[1h) IF we consider "now" as index -1?
+        # Actually API query: from=now[1h to=now[1h+24h.
+        # This returns 24 values starting with the *next* full hour (or current full hour).
+        # Let's assume index 0 is +0h (current hour average) or +1h depending on 'from'.
+        # 'now[1h' rounds to the START of the current hour usually.
+        # So index 0 is "Current Hour", index 1 is "+1h".
+        
+        # If the user wants +1h, we might need index 1.
+        # Let's map it safely.
+        if len(forecast_list) > self.hour_offset:
+             # If index 0 is current hour, then index 'hour_offset' is +X hours away.
+             item = forecast_list[self.hour_offset]
+             return item.get("v")
+        
+        return None
+        
+    @property
+    def extra_state_attributes(self) -> dict[str, any]:
+        """Show timestamp of this forecast slot."""
+        forecast_list = self.coordinator.data.get("price_forecast")
+        if forecast_list and len(forecast_list) > self.hour_offset:
+            item = forecast_list[self.hour_offset]
+            return {
+                "forecast_time": item.get("t"),
+                "flag": item.get("f")
+            }
+        return {}
