@@ -44,7 +44,7 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
 
         try:
             async with async_timeout.timeout(45):
-                # 1. Discover Names if missing (Autocorrect ZPN mismatch)
+                # 1. Discover Names if missing
                 if not self.resolved_names:
                     await self._discover_timeseries_names()
 
@@ -55,7 +55,8 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
                 else:
                     _LOGGER.debug("No current price data found.")
 
-                # 3. Fetch Signal Forecast (Next 48h for calculation)
+                # 3. Fetch Signal Forecast (Next 48h) to find the window
+                # We fetch 48h to ensure we catch tomorrow's window if announced today
                 signal_forecast = await self._fetch_forecast("tariff-signal", hours=48)
                 
                 # 4. Calculate Sun Window info
@@ -76,14 +77,14 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
             return json_response
         
         if isinstance(json_response, dict):
-            # Level 1 check
+            # Check for "Data" key which might contain the list or another object
             l1 = json_response.get("Data", json_response.get("data"))
             
             if isinstance(l1, list):
                 return l1
             
             if isinstance(l1, dict):
-                # Level 2 check (Nested Data object)
+                # Nested Data object (common in this API)
                 l2 = l1.get("Data", l1.get("data"))
                 if isinstance(l2, list):
                     return l2
@@ -91,7 +92,7 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
         return []
 
     def _calculate_sun_window(self, forecast_list: list[dict] | None) -> dict:
-        """Analyze forecast to find Sun Window (Value = 1)."""
+        """Analyze forecast to find Sun Window."""
         result = {
             "sun_window_active": False,
             "next_sun_start": None,
@@ -102,7 +103,7 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
         if not forecast_list:
             return result
         
-        # Target value for Sun Window based on user input (JSON shows 1 for window)
+        # BASED ON USER JSON: Value 1 is the Sun Window
         SUN_WINDOW_VALUE = 1
 
         # 1. Current State (First item is 'now')
@@ -110,17 +111,16 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
         current_val = current_item.get("v")
         result["tariff_signal_now"] = current_item
         
-        # Check if active (Value == 1 is Sun Window)
+        # Check if currently active
         is_active = (current_val == SUN_WINDOW_VALUE)
         result["sun_window_active"] = is_active
 
         # 2. Find Start/End
         if is_active:
-            # Currently Active: 
-            # Start is effectively "now" (or the timestamp of current item)
+            # Currently Active: Start is Now
             result["next_sun_start"] = current_item.get("t")
             
-            # Find End: Look for first item that is NOT the Sun Window Value
+            # Find End: Look for first item that is NOT 1
             for item in forecast_list:
                 if item.get("v") != SUN_WINDOW_VALUE:
                     result["next_sun_end"] = item.get("t")
@@ -141,7 +141,7 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
         return result
 
     def _normalize_data(self, item: dict) -> dict:
-        """Normalize API keys."""
+        """Normalize API keys (Value -> v, etc)."""
         if not item: return item
         if "Value" in item: item["v"] = item["Value"]
         if "Flag" in item: item["f"] = item["Flag"]
@@ -162,20 +162,17 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
                         name = item.get("Name", item.get("name", ""))
                         if "tariff-signal" in name: 
                             self.resolved_names["tariff-signal"] = name
-                            _LOGGER.debug(f"Resolved tariff-signal: {name}")
                         if "innonet-tariff" in name: 
                             self.resolved_names["innonet-tariff"] = name
-                            _LOGGER.debug(f"Resolved innonet-tariff: {name}")
-        except Exception as e:
-            _LOGGER.warning(f"Discovery failed: {e}")
+        except Exception:
+            pass
 
     async def _fetch_timeseries_moment(self, type_prefix: str) -> dict | None:
         """Fetch current single value."""
         ts_name = self.resolved_names.get(type_prefix, f"{type_prefix}-{self.zpn}")
         url = f"{API_BASE_URL}/{self.api_key}/timeseries/{ts_name}/data"
         
-        # Manual query string construction to ensure %2B encoding for '+'
-        # aiohttp sometimes handles '+' loosely, but HAKOM requires strict encoding.
+        # Manual query string construction for %2B encoding
         params_str = "from=now[15m&to=now[15m%2B15m&interval=Minute&intervalMultiplier=15&aggregation=AtTheMoment"
         full_url = f"{url}?{params_str}"
         
@@ -198,8 +195,7 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
         ts_name = self.resolved_names.get(type_prefix, f"{type_prefix}-{self.zpn}")
         url = f"{API_BASE_URL}/{self.api_key}/timeseries/{ts_name}/data"
         
-        # Manual query string construction for forecast
-        # from=now[15m to=now[15m+48h
+        # Manual query string construction
         params_str = f"from=now[15m&to=now[15m%2B{hours}h&interval=Minute&intervalMultiplier=15&aggregation=AtTheMoment"
         full_url = f"{url}?{params_str}"
         

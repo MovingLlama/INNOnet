@@ -55,29 +55,28 @@ class InnonetCurrentPriceSensor(InnonetBaseSensor):
         self._attr_name = "Current Grid Price"
         self._attr_icon = "mdi:currency-eur"
         self._attr_native_unit_of_measurement = "EUR/kWh"
-        # FIX: Removed SensorDeviceClass.MONETARY to allow SensorStateClass.MEASUREMENT
-        # Monetary implies a total balance (state_class: total), but we have a rate/price stream.
+        # Removed monetary to fix validation error for measurement state class
         self._attr_device_class = None
         self._attr_state_class = SensorStateClass.MEASUREMENT
 
     @property
     def native_value(self) -> float | None:
         data = self.coordinator.data.get("current_price")
-        # Ensure we return 0 if the value is explicitly 0 (and not None)
         if data and "v" in data:
             return data["v"]
         return None
 
 
 class InnonetTariffSignalSensor(InnonetBaseSensor):
-    """Text Sensor for Signal (Project, High, Low)."""
+    """Text Sensor for Signal."""
     
     def __init__(self, coordinator, entry):
         super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.data['zpn']}_tariff_signal"
         self._attr_name = "Tariff Signal"
         self._attr_icon = "mdi:traffic-light"
-        self._attr_options = ["Project Tariff", "High Tariff", "Low Tariff (Sun)", "Unknown"]
+        # Updated options based on new logic
+        self._attr_options = ["Standard", "Sonnenfenster (Low)", "Unknown"]
         self._attr_device_class = SensorDeviceClass.ENUM
 
     @property
@@ -85,9 +84,11 @@ class InnonetTariffSignalSensor(InnonetBaseSensor):
         item = self.coordinator.data.get("tariff_signal_now")
         if not item: return None
         val = item.get("v")
-        if val == 0: return "Project Tariff"
-        if val == 1: return "High Tariff"
-        if val == -1: return "Low Tariff (Sun)"
+        
+        # New Logic based on user feedback
+        if val == 0: return "Standard"
+        if val == 1: return "Sonnenfenster (Low)"
+        
         return "Unknown"
 
 
