@@ -30,6 +30,9 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
         self.api_key = entry.data[CONF_API_KEY]
         self.zpn = entry.data[CONF_ZPN]
         self.session = async_get_clientsession(hass)
+        
+        # Cache for resolved timeseries names (e.g. if ZPN guess is wrong)
+        self.resolved_names: dict[str, str] = {}
 
         super().__init__(
             hass,
@@ -42,75 +45,121 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
     async def _async_update_data(self) -> dict:
         """
         Fetch data from API.
-        
-        We fetch:
-        1. The current tariff signal (tariff-signal-{ZPN})
-        2. (Optional) The current tariff price (innonet-tariff-{ZPN})
         """
         data = {}
 
         try:
-            async with async_timeout.timeout(20):
+            async with async_timeout.timeout(30):
                 # 1. Fetch Tariff Signal
-                # Using the syntax from docs: now[30m to now[30m+30m to get the current 30-min window
-                signal_data = await self._fetch_timeseries_moment("tariff-signal")
-                if signal_data is not None:
+                signal_data = await self._fetch_with_fallback("tariff-signal")
+                if signal_data:
                     data["tariff_signal"] = signal_data
 
                 # 2. Fetch Innonet Tariff (Price)
-                # Note: This might return missing values (Flag 19) if not active (signal=0)
-                price_data = await self._fetch_timeseries_moment("innonet-tariff")
-                if price_data is not None:
+                price_data = await self._fetch_with_fallback("innonet-tariff")
+                if price_data:
                     data["innonet_tariff"] = price_data
 
                 if not data:
-                    # If both failed, raise an error
-                    raise UpdateFailed("No data received from INNOnet API (Check ZPN or API Key)")
+                    raise UpdateFailed("No data received from INNOnet API. Check API Key or ZPN.")
 
                 return data
 
         except aiohttp.ClientError as err:
             raise UpdateFailed(f"Error communicating with API: {err}")
 
+    async def _fetch_with_fallback(self, type_prefix: str) -> dict | None:
+        """Try to fetch data, resolve names if 404 occurs."""
+        # First attempt
+        data = await self._fetch_timeseries_moment(type_prefix)
+        
+        # If successful, return
+        if data is not None:
+            return data
+            
+        # If failed (likely 404 or name mismatch), try to auto-discover names once
+        if not self.resolved_names:
+            _LOGGER.info(f"Data not found for {type_prefix}. Attempting to auto-discover timeseries names...")
+            await self._discover_timeseries_names()
+            
+            # Retry with new names
+            data = await self._fetch_timeseries_moment(type_prefix)
+            
+        return data
+
+    async def _discover_timeseries_names(self):
+        """Query the API to find the actual names of available timeseries."""
+        url = f"{API_BASE_URL}/{self.api_key}/timeseriescollections/selected-data"
+        params = {
+            "from": "today",
+            "to": "today+1d",
+            "datatype": "tariff-signal"
+        }
+        
+        try:
+            async with self.session.get(url, params=params) as response:
+                if response.status == 200:
+                    json_data = await response.json()
+                    
+                    # Handle both list and dict wrapper
+                    items = json_data.get("data", []) if isinstance(json_data, dict) else json_data
+                    
+                    if isinstance(items, list):
+                        for item in items:
+                            name = item.get("name", "")
+                            if "tariff-signal" in name:
+                                self.resolved_names["tariff-signal"] = name
+                                _LOGGER.info(f"Discovered tariff-signal name: {name}")
+                            if "innonet-tariff" in name:
+                                self.resolved_names["innonet-tariff"] = name
+                                _LOGGER.info(f"Discovered innonet-tariff name: {name}")
+                                
+        except Exception as err:
+            _LOGGER.warning(f"Auto-discovery failed: {err}")
+
     async def _fetch_timeseries_moment(self, type_prefix: str) -> dict | None:
         """
         Helper to fetch a single moment value for a timeseries type.
-        
-        Args:
-            type_prefix: e.g., "tariff-signal" or "innonet-tariff"
         """
-        ts_name = f"{type_prefix}-{self.zpn}"
+        # Use resolved name if available, otherwise fallback to standard ZPN naming
+        ts_name = self.resolved_names.get(type_prefix, f"{type_prefix}-{self.zpn}")
+        
         url = f"{API_BASE_URL}/{self.api_key}/timeseries/{ts_name}/data"
         
-        # Construct parameters for "Momentanwert" (Instantaneous value)
-        # IMPORTANT: The '+' symbol in 'now[30m+30m' must be encoded as '%2B'.
-        # Standard requests often treat '+' as space. We construct the query string manually 
-        # to ensure strict compliance with HAKOM TSM API requirements mentioned in docs.
+        # Loxone Parameters:
+        # from = now[15m
+        # to = now[15m+15m
+        # interval = Minute
+        # intervalMultiplier = 15
+        # aggregation = AtTheMoment
         
-        # from=now[30m
-        # to=now[30m+30m  --> Encoded: now[30m%2B30m
-        # aggregation=AtTheMoment
-        
-        params_str = "from=now[30m&to=now[30m%2B30m&aggregation=AtTheMoment"
-        
-        # We append the params manually to the URL to avoid aggressive encoding/decoding issues
-        full_url = f"{url}?{params_str}"
+        # We use a dictionary for params to let aiohttp handle safe encoding.
+        # This prevents double-encoding issues with the manual string construction.
+        params = {
+            "from": "now[15m",
+            "to": "now[15m+15m",
+            "interval": "Minute",
+            "intervalMultiplier": "15",
+            "aggregation": "AtTheMoment"
+        }
         
         try:
-            async with self.session.get(full_url) as response:
+            async with self.session.get(url, params=params) as response:
                 if response.status == 404:
-                    _LOGGER.warning(f"Failed to fetch {ts_name}: 404 Not Found. Please check if ZPN '{self.zpn}' is correct and active.")
+                    _LOGGER.warning(f"Timeseries '{ts_name}' not found (404).")
                     return None
                 
                 if response.status != 200:
-                    _LOGGER.warning(f"Failed to fetch {ts_name}: Status {response.status}")
+                    _LOGGER.debug(f"Failed to fetch {ts_name}: Status {response.status}")
                     return None
                 
                 json_data = await response.json()
                 
-                if "data" in json_data and len(json_data["data"]) > 0:
-                    # Return the first data point found
-                    return json_data["data"][0]
+                # Check for list wrapper or direct data object
+                data_list = json_data.get("data", []) if isinstance(json_data, dict) else json_data
+                
+                if isinstance(data_list, list) and len(data_list) > 0:
+                    return data_list[0]
                 
                 return None
         except Exception as e:
