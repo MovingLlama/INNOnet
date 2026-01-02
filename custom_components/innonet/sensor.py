@@ -56,13 +56,15 @@ class InnonetCurrentPriceSensor(InnonetBaseSensor):
         self._attr_icon = "mdi:currency-eur"
         self._attr_native_unit_of_measurement = "EUR/kWh"
         self._attr_device_class = SensorDeviceClass.MONETARY
-        # IMPORTANT: Measurement state class enables history graphs
         self._attr_state_class = SensorStateClass.MEASUREMENT
 
     @property
     def native_value(self) -> float | None:
         data = self.coordinator.data.get("current_price")
-        return data.get("v") if data else None
+        # Ensure we return 0 if the value is explicitly 0 (and not None)
+        if data and "v" in data:
+            return data["v"]
+        return None
 
 
 class InnonetTariffSignalSensor(InnonetBaseSensor):
