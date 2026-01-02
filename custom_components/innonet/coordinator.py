@@ -31,14 +31,13 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
         self.zpn = entry.data[CONF_ZPN]
         self.session = async_get_clientsession(hass)
         
-        # Cache for resolved timeseries names (e.g. if ZPN guess is wrong)
+        # Cache for resolved timeseries names
         self.resolved_names: dict[str, str] = {}
 
         super().__init__(
             hass,
             _LOGGER,
             name=DOMAIN,
-            # Documentation explicitly requests update interval > 5 minutes.
             update_interval=timedelta(minutes=UPDATE_INTERVAL_MINUTES),
         )
 
@@ -61,7 +60,10 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
                     data["innonet_tariff"] = price_data
 
                 if not data:
-                    raise UpdateFailed("No data received from INNOnet API. Check API Key or ZPN.")
+                    # Trigger discovery if we have NO data at all, just in case
+                    if not self.resolved_names:
+                        await self._discover_timeseries_names()
+                    raise UpdateFailed("No data received from INNOnet API.")
 
                 return data
 
@@ -70,30 +72,21 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
 
     async def _fetch_with_fallback(self, type_prefix: str) -> dict | None:
         """Try to fetch data, resolve names if 404 occurs."""
-        # First attempt
+        # If we haven't resolved names yet, try discovery first to be safe, 
+        # especially since we know the ZPN might mismatch the timeseries ID.
+        if type_prefix not in self.resolved_names:
+             await self._discover_timeseries_names()
+
         data = await self._fetch_timeseries_moment(type_prefix)
-        
-        # If successful, return
-        if data is not None:
-            return data
-            
-        # If failed (likely 404 or name mismatch), try to auto-discover names once
-        if not self.resolved_names:
-            _LOGGER.info(f"Data not found for {type_prefix}. Attempting to auto-discover timeseries names...")
-            await self._discover_timeseries_names()
-            
-            # Retry with new names
-            data = await self._fetch_timeseries_moment(type_prefix)
-            
         return data
 
     async def _discover_timeseries_names(self):
         """Query the API to find the actual names of available timeseries."""
         url = f"{API_BASE_URL}/{self.api_key}/timeseriescollections/selected-data"
+        # Using simple params for discovery
         params = {
             "from": "today",
-            "to": "today+1d",
-            "datatype": "tariff-signal"
+            "to": "today+1d" 
         }
         
         try:
@@ -101,18 +94,23 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
                 if response.status == 200:
                     json_data = await response.json()
                     
-                    # Handle both list and dict wrapper
-                    items = json_data.get("data", []) if isinstance(json_data, dict) else json_data
+                    # Handle wrappers (Data/data) or list
+                    items = []
+                    if isinstance(json_data, list):
+                        items = json_data
+                    elif isinstance(json_data, dict):
+                        items = json_data.get("Data", json_data.get("data", []))
                     
-                    if isinstance(items, list):
-                        for item in items:
-                            name = item.get("name", "")
-                            if "tariff-signal" in name:
-                                self.resolved_names["tariff-signal"] = name
-                                _LOGGER.info(f"Discovered tariff-signal name: {name}")
-                            if "innonet-tariff" in name:
-                                self.resolved_names["innonet-tariff"] = name
-                                _LOGGER.info(f"Discovered innonet-tariff name: {name}")
+                    for item in items:
+                        # Handle "Name" (your JSON) vs "name" (docs)
+                        name = item.get("Name", item.get("name", ""))
+                        
+                        if "tariff-signal" in name:
+                            self.resolved_names["tariff-signal"] = name
+                            _LOGGER.info(f"Discovered tariff-signal name: {name}")
+                        if "innonet-tariff" in name:
+                            self.resolved_names["innonet-tariff"] = name
+                            _LOGGER.info(f"Discovered innonet-tariff name: {name}")
                                 
         except Exception as err:
             _LOGGER.warning(f"Auto-discovery failed: {err}")
@@ -126,15 +124,8 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
         
         url = f"{API_BASE_URL}/{self.api_key}/timeseries/{ts_name}/data"
         
-        # Loxone Parameters:
-        # from = now[15m
-        # to = now[15m+15m
-        # interval = Minute
-        # intervalMultiplier = 15
-        # aggregation = AtTheMoment
-        
-        # We use a dictionary for params to let aiohttp handle safe encoding.
-        # This prevents double-encoding issues with the manual string construction.
+        # Loxone Parameters
+        # Note: We let aiohttp handle the encoding of params passed as dict.
         params = {
             "from": "now[15m",
             "to": "now[15m+15m",
@@ -146,18 +137,21 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
         try:
             async with self.session.get(url, params=params) as response:
                 if response.status == 404:
-                    _LOGGER.warning(f"Timeseries '{ts_name}' not found (404).")
+                    # Don't log warning here, let the fallback logic handle it
                     return None
                 
                 if response.status != 200:
-                    _LOGGER.debug(f"Failed to fetch {ts_name}: Status {response.status}")
                     return None
                 
                 json_data = await response.json()
                 
-                # Check for list wrapper or direct data object
-                data_list = json_data.get("data", []) if isinstance(json_data, dict) else json_data
-                
+                # Handle "Data" vs "data" vs direct list
+                data_list = []
+                if isinstance(json_data, list):
+                    data_list = json_data
+                elif isinstance(json_data, dict):
+                    data_list = json_data.get("Data", json_data.get("data", []))
+
                 if isinstance(data_list, list) and len(data_list) > 0:
                     return data_list[0]
                 

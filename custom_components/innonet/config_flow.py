@@ -43,12 +43,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             zpn = None
 
             if manual_zpn:
-                # Use manually provided ZPN and strip whitespace
                 zpn = manual_zpn.strip()
-                # Optional: Verify validity by making a quick API call here if desired
-                # For now, we trust the user input to allow setup even if API is glitchy
             else:
-                # Try auto-discovery
                 zpn = await self._validate_and_discover_zpn(api_key)
 
             if zpn:
@@ -63,7 +59,6 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     },
                 )
             else:
-                # Discovery failed and no manual ZPN provided
                 errors["base"] = "discovery_failed"
 
         return self.async_show_form(
@@ -71,7 +66,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             data_schema=STEP_USER_DATA_SCHEMA, 
             errors=errors,
             description_placeholders={
-                "zpn_help": "Wenn die automatische Erkennung fehlschlägt, gib hier deine Zählpunktnummer (ZPN) ein."
+                "zpn_help": "Falls die automatische Erkennung fehlschlägt, gib hier deine ZPN ein."
             }
         )
 
@@ -82,8 +77,6 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         session = async_get_clientsession(self.hass)
         url = f"{API_BASE_URL}/{api_key}/timeseriescollections/selected-data"
         
-        # Changed to today+1d to ensure we get a non-empty range which might help 
-        # API return the metadata correctly.
         params = {
             "from": "today",
             "to": "today+1d", 
@@ -98,33 +91,26 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 
                 data = await response.json()
                 
-                # Debug logging to help troubleshoot if it fails again
-                _LOGGER.debug("INNOnet Discovery Response: %s", data)
-
-                # Handle potential "data" wrapper in response
                 items = data
-                if isinstance(data, dict) and "data" in data:
+                if isinstance(data, dict) and "data" in data: # Case 'data' (lowercase)
                     items = data["data"]
+                elif isinstance(data, dict) and "Data" in data: # Case 'Data' (uppercase)
+                    items = data["Data"]
                 
                 if isinstance(items, list) and len(items) > 0:
                     for item in items:
-                        ts_name = item.get("name", "")
-                        # Case insensitive check
+                        # Handle both "Name" and "name"
+                        ts_name = item.get("Name", item.get("name", ""))
+                        
                         if ts_name.lower().startswith("tariff-signal-"):
-                            # Extract ZPN: "tariff-signal-123456" -> "123456"
-                            # Split by first occurrence of "-" might be safer if ZPN has dashes?
-                            # Usually format is fixed, but let's be careful.
-                            # Assuming standard format "tariff-signal-{ZPN}"
                             zpn = ts_name[14:] # len("tariff-signal-") is 14
                             _LOGGER.debug("Discovered ZPN: %s", zpn)
                             return zpn
                 
-                _LOGGER.error("Could not find a valid 'tariff-signal-{ZPN}' in API response. Data: %s", data)
+                _LOGGER.error("Could not find a valid 'tariff-signal-{ZPN}' in API response.")
                 return None
 
         except aiohttp.ClientError as err:
-            _LOGGER.error("Connection error during setup: %s", err)
             return None
         except Exception as err:
-            _LOGGER.exception("Unexpected error during setup: %s", err)
             return None
