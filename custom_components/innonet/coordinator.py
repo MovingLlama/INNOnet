@@ -56,7 +56,6 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
                     _LOGGER.debug("No current price data found.")
 
                 # 3. Fetch Signal Forecast (Next 48h for calculation)
-                # Fetching 48h ensures we find the next window even if it's tomorrow after 16:00
                 signal_forecast = await self._fetch_forecast("tariff-signal", hours=48)
                 
                 # 4. Calculate Sun Window info
@@ -72,13 +71,7 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
             raise UpdateFailed(f"Error communicating with API: {err}")
 
     def _extract_data_list(self, json_response: any) -> list:
-        """
-        Robustly extract the list of data points from nested JSON.
-        Structure can be:
-        - [ ... ]
-        - { "Data": [ ... ] }
-        - { "Data": { "Data": [ ... ] } }  <-- This was likely the issue
-        """
+        """Robustly extract the list of data points from nested JSON."""
         if isinstance(json_response, list):
             return json_response
         
@@ -122,7 +115,7 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
         found_start = False
         
         if is_active:
-            # Currently Active: Start is Now (or previous, but for UI 'now' is fine)
+            # Currently Active: Start is Now (or previous)
             result["next_sun_start"] = current_item.get("t")
             found_start = True
             
@@ -150,21 +143,19 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
     def _normalize_data(self, item: dict) -> dict:
         """Normalize API keys."""
         if not item: return item
-        # API often uses PascalCase, sensor expects 'v', 'f', 't'
         if "Value" in item: item["v"] = item["Value"]
         if "Flag" in item: item["f"] = item["Flag"]
         if "From" in item: item["t"] = item["From"]
         return item
 
     async def _discover_timeseries_names(self):
-        """Query 'selected-data' to find correct timeseries names (fix ZPN mismatch)."""
+        """Query 'selected-data' to find correct timeseries names."""
         url = f"{API_BASE_URL}/{self.api_key}/timeseriescollections/selected-data"
         params = {"from": "today", "to": "today+1d"}
         try:
             async with self.session.get(url, params=params) as response:
                 if response.status == 200:
                     json_data = await response.json()
-                    # Use robust extraction here too
                     items = self._extract_data_list(json_data)
                     
                     for item in items:
@@ -183,14 +174,13 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
         ts_name = self.resolved_names.get(type_prefix, f"{type_prefix}-{self.zpn}")
         url = f"{API_BASE_URL}/{self.api_key}/timeseries/{ts_name}/data"
         
-        # Params matching Loxone logic (15min grid)
-        params = {
-            "from": "now[15m", "to": "now[15m+15m",
-            "interval": "Minute", "intervalMultiplier": "15", "aggregation": "AtTheMoment"
-        }
+        # Manual query string construction to ensure %2B encoding for '+'
+        # aiohttp sometimes handles '+' loosely, but HAKOM requires strict encoding.
+        params_str = "from=now[15m&to=now[15m%2B15m&interval=Minute&intervalMultiplier=15&aggregation=AtTheMoment"
+        full_url = f"{url}?{params_str}"
         
         try:
-            async with self.session.get(url, params=params) as response:
+            async with self.session.get(full_url) as response:
                 if response.status == 200:
                     json_data = await response.json()
                     items = self._extract_data_list(json_data)
@@ -208,16 +198,13 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
         ts_name = self.resolved_names.get(type_prefix, f"{type_prefix}-{self.zpn}")
         url = f"{API_BASE_URL}/{self.api_key}/timeseries/{ts_name}/data"
         
-        params = {
-            "from": "now[15m",
-            "to": f"now[15m+{hours}h",
-            "interval": "Minute",
-            "intervalMultiplier": "15",
-            "aggregation": "AtTheMoment"
-        }
+        # Manual query string construction for forecast
+        # from=now[15m to=now[15m+48h
+        params_str = f"from=now[15m&to=now[15m%2B{hours}h&interval=Minute&intervalMultiplier=15&aggregation=AtTheMoment"
+        full_url = f"{url}?{params_str}"
         
         try:
-            async with self.session.get(url, params=params) as response:
+            async with self.session.get(full_url) as response:
                 if response.status == 200:
                     json_data = await response.json()
                     items = self._extract_data_list(json_data)

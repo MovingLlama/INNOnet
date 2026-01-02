@@ -153,16 +153,15 @@ class InnonetOptionsFlowHandler(config_entries.OptionsFlow):
                         CONF_API_KEY: api_key,
                         CONF_ZPN: zpn
                     },
-                    title=f"INNOnet ({zpn})" # Update title in case ZPN changed
+                    title=f"INNOnet ({zpn})"
                 )
-                # Return empty dict to indicate success (we updated entry directly)
                 return self.async_create_entry(title="", data={})
             else:
                 errors["base"] = "discovery_failed"
 
-        # Show form with current values pre-filled
-        current_api_key = self.config_entry.data.get(CONF_API_KEY)
-        current_zpn = self.config_entry.data.get(CONF_ZPN)
+        # FIX: Ensure we have safe default strings to prevent 500 Error
+        current_api_key = self.config_entry.data.get(CONF_API_KEY, "")
+        current_zpn = self.config_entry.data.get(CONF_ZPN, "")
 
         return self.async_show_form(
             step_id="init",
