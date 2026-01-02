@@ -1,0 +1,70 @@
+name: Automatic Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Generate Version Number
+        id: version
+        run: |
+          # --- KONFIGURATION ---
+          # Hier auf die neue Minor Version stellen (z.B. 0.2)
+          MAJOR_MINOR="0.1" 
+          OFFSET=1
+          
+          # --- BERECHNUNG ---
+          # Aktuelle Run Number holen
+          CURRENT_RUN="${{ github.run_number }}"
+          
+          # Hier wird gerechnet: Run Number - 41
+          # $(( ... )) führt mathematische Operationen in Bash aus
+          CALCULATED_NUMBER=$((CURRENT_RUN - OFFSET))
+          
+          # Sicherheitscheck (optional): Falls das Ergebnis < 0 ist, auf 0 setzen
+          if [ "$CALCULATED_NUMBER" -lt 0 ]; then
+            CALCULATED_NUMBER=0
+          fi
+
+          VERSION="v${MAJOR_MINOR}.${CALCULATED_NUMBER}"
+          CLEAN_VERSION="${MAJOR_MINOR}.${CALCULATED_NUMBER}"
+          
+          # --- OUTPUT ---
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "CLEAN_VERSION=$CLEAN_VERSION" >> $GITHUB_ENV
+          
+          echo "Original Run Number: $CURRENT_RUN"
+          echo "Generierte Version: $VERSION"
+
+      - name: Update manifest.json (Temporary for Zip)
+        run: |
+          jq --arg ver "${{ env.CLEAN_VERSION }}" '.version = $ver' custom_components/innonet/manifest.json > manifest.tmp && mv manifest.tmp custom_components/innonet/manifest.json
+          
+          echo "Manifest Version temporär auf ${{ env.CLEAN_VERSION }} gesetzt."
+
+      - name: Zip component directory
+        run: |
+          cd custom_components/innonet
+          zip -r ../../innonet.zip .
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.VERSION }}
+          name: Release ${{ env.VERSION }}
+          files: innonet.zip
+          generate_release_notes: true
+          draft: false
+          prerelease: false
