@@ -16,12 +16,13 @@ from .const import DOMAIN, API_BASE_URL, CONF_ZPN
 
 _LOGGER = logging.getLogger(__name__)
 
+# Schema now includes optional ZPN for fallback
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
         vol.Required(CONF_API_KEY): str,
+        vol.Optional(CONF_ZPN): str,
     }
 )
-
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for INNOnet."""
@@ -36,9 +37,18 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is not None:
             api_key = user_input[CONF_API_KEY]
+            manual_zpn = user_input.get(CONF_ZPN)
             
-            # Validate the API key and try to auto-discover the ZPN (Metering Point Number)
-            zpn = await self._validate_and_discover_zpn(api_key)
+            zpn = None
+
+            if manual_zpn:
+                # Use manually provided ZPN
+                zpn = manual_zpn
+                # Optional: Verify validity by making a quick API call here if desired
+                # For now, we trust the user input to allow setup even if API is glitchy
+            else:
+                # Try auto-discovery
+                zpn = await self._validate_and_discover_zpn(api_key)
 
             if zpn:
                 await self.async_set_unique_id(zpn)
@@ -52,26 +62,30 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     },
                 )
             else:
-                errors["base"] = "cannot_connect"
+                # Discovery failed and no manual ZPN provided
+                errors["base"] = "discovery_failed"
 
         return self.async_show_form(
-            step_id="user", data_schema=STEP_USER_DATA_SCHEMA, errors=errors
+            step_id="user", 
+            data_schema=STEP_USER_DATA_SCHEMA, 
+            errors=errors,
+            description_placeholders={
+                "zpn_help": "Wenn die automatische Erkennung fehlschlägt, gib hier deine Zählpunktnummer (ZPN) ein."
+            }
         )
 
     async def _validate_and_discover_zpn(self, api_key: str) -> str | None:
         """
         Validate API key and discover ZPN.
-        
-        We query the 'selected-data' endpoint for the 'tariff-signal'.
-        The response usually contains the timeseries name in the format 'tariff-signal-{ZPN}'.
-        This allows us to extract the ZPN automatically.
         """
         session = async_get_clientsession(self.hass)
-        # URL to fetch metadata about the tariff signal to find the user's ZPN
         url = f"{API_BASE_URL}/{api_key}/timeseriescollections/selected-data"
+        
+        # Changed to today+1d to ensure we get a non-empty range which might help 
+        # API return the metadata correctly.
         params = {
             "from": "today",
-            "to": "today",
+            "to": "today+1d", 
             "datatype": "tariff-signal"
         }
 
@@ -83,18 +97,28 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 
                 data = await response.json()
                 
-                # Check if we got a list and it's not empty
-                if isinstance(data, list) and len(data) > 0:
-                    # Look for the first entry that looks like a tariff signal
-                    for item in data:
+                # Debug logging to help troubleshoot if it fails again
+                _LOGGER.debug("INNOnet Discovery Response: %s", data)
+
+                # Handle potential "data" wrapper in response
+                items = data
+                if isinstance(data, dict) and "data" in data:
+                    items = data["data"]
+                
+                if isinstance(items, list) and len(items) > 0:
+                    for item in items:
                         ts_name = item.get("name", "")
-                        if ts_name.startswith("tariff-signal-"):
+                        # Case insensitive check
+                        if ts_name.lower().startswith("tariff-signal-"):
                             # Extract ZPN: "tariff-signal-123456" -> "123456"
-                            zpn = ts_name.replace("tariff-signal-", "")
+                            # Split by first occurrence of "-" might be safer if ZPN has dashes?
+                            # Usually format is fixed, but let's be careful.
+                            # Assuming standard format "tariff-signal-{ZPN}"
+                            zpn = ts_name[14:] # len("tariff-signal-") is 14
                             _LOGGER.debug("Discovered ZPN: %s", zpn)
                             return zpn
                 
-                _LOGGER.error("Could not find a valid 'tariff-signal-{ZPN}' in API response.")
+                _LOGGER.error("Could not find a valid 'tariff-signal-{ZPN}' in API response. Data: %s", data)
                 return None
 
         except aiohttp.ClientError as err:
@@ -103,3 +127,4 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         except Exception as err:
             _LOGGER.exception("Unexpected error during setup: %s", err)
             return None
+        
