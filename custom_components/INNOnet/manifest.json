@@ -1,0 +1,11 @@
+{
+  "domain": "innonet",
+  "name": "INNOnet",
+  "codeowners": [],
+  "config_flow": true,
+  "documentation": "https://github.com/username/ha-innonet",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/username/ha-innonet/issues",
+  "requirements": [],
+  "version": "1.0.0"
+}
