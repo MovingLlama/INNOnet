@@ -36,14 +36,15 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
 
         if user_input is not None:
-            api_key = user_input[CONF_API_KEY]
+            # Strip whitespace to prevent copy-paste errors
+            api_key = user_input[CONF_API_KEY].strip()
             manual_zpn = user_input.get(CONF_ZPN)
             
             zpn = None
 
             if manual_zpn:
-                # Use manually provided ZPN
-                zpn = manual_zpn
+                # Use manually provided ZPN and strip whitespace
+                zpn = manual_zpn.strip()
                 # Optional: Verify validity by making a quick API call here if desired
                 # For now, we trust the user input to allow setup even if API is glitchy
             else:
@@ -127,4 +128,3 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         except Exception as err:
             _LOGGER.exception("Unexpected error during setup: %s", err)
             return None
-        
