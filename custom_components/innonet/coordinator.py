@@ -91,7 +91,7 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
         return []
 
     def _calculate_sun_window(self, forecast_list: list[dict] | None) -> dict:
-        """Analyze forecast to find Sun Window (-1)."""
+        """Analyze forecast to find Sun Window (Value = 1)."""
         result = {
             "sun_window_active": False,
             "next_sun_start": None,
@@ -101,39 +101,39 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
 
         if not forecast_list:
             return result
+        
+        # Target value for Sun Window based on user input (JSON shows 1 for window)
+        SUN_WINDOW_VALUE = 1
 
         # 1. Current State (First item is 'now')
         current_item = forecast_list[0]
         current_val = current_item.get("v")
         result["tariff_signal_now"] = current_item
         
-        # Check if active (-1 is Sun Window)
-        is_active = (current_val == -1)
+        # Check if active (Value == 1 is Sun Window)
+        is_active = (current_val == SUN_WINDOW_VALUE)
         result["sun_window_active"] = is_active
 
         # 2. Find Start/End
-        found_start = False
-        
         if is_active:
-            # Currently Active: Start is Now (or previous)
+            # Currently Active: 
+            # Start is effectively "now" (or the timestamp of current item)
             result["next_sun_start"] = current_item.get("t")
-            found_start = True
             
-            # Find End: First value that is NOT -1
+            # Find End: Look for first item that is NOT the Sun Window Value
             for item in forecast_list:
-                if item.get("v") != -1:
+                if item.get("v") != SUN_WINDOW_VALUE:
                     result["next_sun_end"] = item.get("t")
                     break
         else:
-            # Currently Inactive: Find next Start (-1)
+            # Currently Inactive: Find next Start (First occurrence of 1)
             for i, item in enumerate(forecast_list):
-                if item.get("v") == -1:
+                if item.get("v") == SUN_WINDOW_VALUE:
                     result["next_sun_start"] = item.get("t")
-                    found_start = True
                     
-                    # From here, find the End
+                    # From here, find the End (First occurrence of NOT 1 after Start)
                     for sub_item in forecast_list[i:]:
-                        if sub_item.get("v") != -1:
+                        if sub_item.get("v") != SUN_WINDOW_VALUE:
                             result["next_sun_end"] = sub_item.get("t")
                             break
                     break
