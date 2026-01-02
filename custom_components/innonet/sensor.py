@@ -11,6 +11,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .coordinator import InnonetDataUpdateCoordinator
@@ -104,7 +105,11 @@ class InnonetNextSunWindowStartSensor(InnonetBaseSensor):
 
     @property
     def native_value(self):
-        return self.coordinator.data.get("next_sun_start")
+        val = self.coordinator.data.get("next_sun_start")
+        if val:
+            # Parse string to datetime object using HA helper
+            return dt_util.parse_datetime(val)
+        return None
 
 
 class InnonetNextSunWindowEndSensor(InnonetBaseSensor):
@@ -119,4 +124,8 @@ class InnonetNextSunWindowEndSensor(InnonetBaseSensor):
 
     @property
     def native_value(self):
-        return self.coordinator.data.get("next_sun_end")
+        val = self.coordinator.data.get("next_sun_end")
+        if val:
+            # Parse string to datetime object using HA helper
+            return dt_util.parse_datetime(val)
+        return None
