@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 from datetime import timedelta
+import urllib.parse
 
 import aiohttp
 import async_timeout
@@ -63,7 +64,8 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
                     data["innonet_tariff"] = price_data
 
                 if not data:
-                    raise UpdateFailed("No data received from INNOnet API")
+                    # If both failed, raise an error
+                    raise UpdateFailed("No data received from INNOnet API (Check ZPN or API Key)")
 
                 return data
 
@@ -80,37 +82,37 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
         ts_name = f"{type_prefix}-{self.zpn}"
         url = f"{API_BASE_URL}/{self.api_key}/timeseries/{ts_name}/data"
         
-        # Parameters for "Momentanwert" (Instantaneous value) as per documentation
-        # "now[30m" rounds 'now' down to the nearest 30 mins.
-        # "now[30m%2B30m" adds 30 mins to that.
-        # Note: We must send encoded + (%2B) in the actual request, but aiohttp handles params encoding usually.
-        # However, looking at the doc examples, the server uses HAKOM TSM syntax.
-        # Let's use simple parameters handled by aiohttp.
+        # Construct parameters for "Momentanwert" (Instantaneous value)
+        # IMPORTANT: The '+' symbol in 'now[30m+30m' must be encoded as '%2B'.
+        # Standard requests often treat '+' as space. We construct the query string manually 
+        # to ensure strict compliance with HAKOM TSM API requirements mentioned in docs.
         
-        params = {
-            "from": "now[30m",
-            "to": "now[30m+30m", # The + sign might need care, but aiohttp usually encodes. 
-                                 # If server is strict about double encoding, we might need to construct URL manually.
-                                 # Assuming standard encoding works for now.
-            "aggregation": "AtTheMoment"
-        }
+        # from=now[30m
+        # to=now[30m+30m  --> Encoded: now[30m%2B30m
+        # aggregation=AtTheMoment
         
-        # NOTE: The documentation specifically mentions URL encoding %2B for +. 
-        # aiohttp params encoding usually converts '+' to space or encodes it. 
-        # To be safe regarding the specific HAKOM syntax, we construct the query string carefully if needed.
-        # But 'now[30m+30m' in a param value usually gets encoded to 'now%5B30m%2B30m' which is correct.
+        params_str = "from=now[30m&to=now[30m%2B30m&aggregation=AtTheMoment"
         
-        async with self.session.get(url, params=params) as response:
-            if response.status != 200:
-                _LOGGER.warning(f"Failed to fetch {ts_name}: {response.status}")
+        # We append the params manually to the URL to avoid aggressive encoding/decoding issues
+        full_url = f"{url}?{params_str}"
+        
+        try:
+            async with self.session.get(full_url) as response:
+                if response.status == 404:
+                    _LOGGER.warning(f"Failed to fetch {ts_name}: 404 Not Found. Please check if ZPN '{self.zpn}' is correct and active.")
+                    return None
+                
+                if response.status != 200:
+                    _LOGGER.warning(f"Failed to fetch {ts_name}: Status {response.status}")
+                    return None
+                
+                json_data = await response.json()
+                
+                if "data" in json_data and len(json_data["data"]) > 0:
+                    # Return the first data point found
+                    return json_data["data"][0]
+                
                 return None
-            
-            json_data = await response.json()
-            # Response format expected:
-            # { "data": [ { "v": value, "t": timestamp, ... } ], ... }
-            
-            if "data" in json_data and len(json_data["data"]) > 0:
-                # Return the first data point found
-                return json_data["data"][0]
-            
+        except Exception as e:
+            _LOGGER.error(f"Exception fetching {ts_name}: {e}")
             return None
