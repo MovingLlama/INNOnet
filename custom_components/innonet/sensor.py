@@ -66,6 +66,11 @@ class InnonetCurrentPriceSensor(InnonetBaseSensor):
         if data and "v" in data:
             return data["v"]
         return None
+        
+    @property
+    def extra_state_attributes(self) -> dict[str, any]:
+        """Return raw data for debugging."""
+        return self.coordinator.data.get("current_price", {})
 
 
 class InnonetTariffSignalSensor(InnonetBaseSensor):
@@ -84,13 +89,26 @@ class InnonetTariffSignalSensor(InnonetBaseSensor):
     def native_value(self) -> str | None:
         item = self.coordinator.data.get("tariff_signal_now")
         if not item: return None
+        
         val = item.get("v")
+        
+        # Robust conversion to int to handle strings or floats from API
+        try:
+            if val is not None:
+                val = int(float(val))
+        except (ValueError, TypeError):
+            pass # Keep original val if conversion fails
         
         # New Logic based on user feedback
         if val == 0: return "Standard"
         if val == 1: return "Sonnenfenster (Low)"
         
         return "Unknown"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, any]:
+        """Return raw data for debugging."""
+        return self.coordinator.data.get("tariff_signal_now", {})
 
 
 class InnonetNextSunWindowStartSensor(InnonetBaseSensor):
