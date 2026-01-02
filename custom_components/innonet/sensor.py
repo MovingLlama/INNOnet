@@ -55,7 +55,9 @@ class InnonetCurrentPriceSensor(InnonetBaseSensor):
         self._attr_name = "Current Grid Price"
         self._attr_icon = "mdi:currency-eur"
         self._attr_native_unit_of_measurement = "EUR/kWh"
-        self._attr_device_class = SensorDeviceClass.MONETARY
+        # FIX: Removed SensorDeviceClass.MONETARY to allow SensorStateClass.MEASUREMENT
+        # Monetary implies a total balance (state_class: total), but we have a rate/price stream.
+        self._attr_device_class = None
         self._attr_state_class = SensorStateClass.MEASUREMENT
 
     @property
