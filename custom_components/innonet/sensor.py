@@ -25,7 +25,8 @@ async def async_setup_entry(
     coordinator: InnonetDataUpdateCoordinator = hass.data[DOMAIN][entry.entry_id]
 
     entities = [
-        InnonetCurrentPriceSensor(coordinator, entry),
+        InnonetGridPriceSensor(coordinator, entry),
+        InnonetEnergyPriceSensor(coordinator, entry),
         InnonetTariffSignalSensor(coordinator, entry),
         InnonetNextSunWindowStartSensor(coordinator, entry),
         InnonetNextSunWindowEndSensor(coordinator, entry),
@@ -47,30 +48,58 @@ class InnonetBaseSensor(CoordinatorEntity, SensorEntity):
         )
 
 
-class InnonetCurrentPriceSensor(InnonetBaseSensor):
-    """Sensor for current price with history tracking."""
+class InnonetGridPriceSensor(InnonetBaseSensor):
+    """Sensor for Grid Price (Netzkosten)."""
     
     def __init__(self, coordinator, entry):
         super().__init__(coordinator, entry)
-        self._attr_unique_id = f"{entry.data['zpn']}_current_price"
-        self._attr_name = "Current Grid Price"
-        self._attr_icon = "mdi:currency-eur"
+        self._attr_unique_id = f"{entry.data['zpn']}_grid_price"
+        self._attr_name = "Grid Price"
+        self._attr_icon = "mdi:transmission-tower"
         self._attr_native_unit_of_measurement = "EUR/kWh"
-        # Removed monetary to fix validation error for measurement state class
         self._attr_device_class = None
         self._attr_state_class = SensorStateClass.MEASUREMENT
 
     @property
     def native_value(self) -> float | None:
-        data = self.coordinator.data.get("current_price")
+        data = self.coordinator.data.get("grid_price")
+        # Coordinator auto-converts Cent/kWh to EUR/kWh
         if data and "v" in data:
             return data["v"]
         return None
-        
+    
     @property
     def extra_state_attributes(self) -> dict[str, any]:
-        """Return raw data for debugging."""
-        return self.coordinator.data.get("current_price", {})
+        return self.coordinator.data.get("grid_price", {})
+
+
+class InnonetEnergyPriceSensor(InnonetBaseSensor):
+    """Sensor for Energy Price (Energiekosten) incl. VAT."""
+    
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.data['zpn']}_energy_price"
+        self._attr_name = "Energy Price"
+        self._attr_icon = "mdi:lightning-bolt"
+        self._attr_native_unit_of_measurement = "EUR/kWh"
+        self._attr_device_class = None
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+
+    @property
+    def native_value(self) -> float | None:
+        data = self.coordinator.data.get("energy_price")
+        if data and "v" in data:
+            val = data["v"]
+            # Add 20% VAT to get the Gross price (e.g. 0.1545 -> 0.1854)
+            try:
+                return round(float(val) * 1.2, 5)
+            except (ValueError, TypeError):
+                return val
+        return None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, any]:
+        return self.coordinator.data.get("energy_price", {})
 
 
 class InnonetTariffSignalSensor(InnonetBaseSensor):
@@ -81,7 +110,6 @@ class InnonetTariffSignalSensor(InnonetBaseSensor):
         self._attr_unique_id = f"{entry.data['zpn']}_tariff_signal"
         self._attr_name = "Tariff Signal"
         self._attr_icon = "mdi:traffic-light"
-        # Updated options based on new logic
         self._attr_options = ["Standard", "Sonnenfenster (Low)", "Unknown"]
         self._attr_device_class = SensorDeviceClass.ENUM
 
@@ -89,25 +117,20 @@ class InnonetTariffSignalSensor(InnonetBaseSensor):
     def native_value(self) -> str | None:
         item = self.coordinator.data.get("tariff_signal_now")
         if not item: return None
-        
         val = item.get("v")
         
-        # Robust conversion to int to handle strings or floats from API
         try:
             if val is not None:
                 val = int(float(val))
         except (ValueError, TypeError):
-            pass # Keep original val if conversion fails
+            pass 
         
-        # New Logic based on user feedback
         if val == 0: return "Standard"
         if val == 1: return "Sonnenfenster (Low)"
-        
         return "Unknown"
 
     @property
     def extra_state_attributes(self) -> dict[str, any]:
-        """Return raw data for debugging."""
         return self.coordinator.data.get("tariff_signal_now", {})
 
 
@@ -125,7 +148,6 @@ class InnonetNextSunWindowStartSensor(InnonetBaseSensor):
     def native_value(self):
         val = self.coordinator.data.get("next_sun_start")
         if val:
-            # Parse string to datetime object using HA helper
             return dt_util.parse_datetime(val)
         return None
 
@@ -144,6 +166,5 @@ class InnonetNextSunWindowEndSensor(InnonetBaseSensor):
     def native_value(self):
         val = self.coordinator.data.get("next_sun_end")
         if val:
-            # Parse string to datetime object using HA helper
             return dt_util.parse_datetime(val)
         return None

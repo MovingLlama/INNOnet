@@ -44,22 +44,24 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
 
         try:
             async with async_timeout.timeout(45):
-                # 1. Discover Names if missing
+                # 1. Discover Names
                 if not self.resolved_names:
                     await self._discover_timeseries_names()
 
-                # 2. Fetch Current Price
-                price_data = await self._fetch_timeseries_moment("innonet-tariff")
-                if price_data:
-                    data["current_price"] = price_data
-                else:
-                    _LOGGER.debug("No current price data found.")
+                # 2. Fetch Grid Price (innonet-tariff)
+                grid_data = await self._fetch_timeseries_moment("innonet-tariff")
+                if grid_data:
+                    data["grid_price"] = grid_data
 
-                # 3. Fetch Signal Forecast (Next 48h) to find the window
-                # We fetch 48h to ensure we catch tomorrow's window if announced today
+                # 3. Fetch Energy Price (public-energy-tariff)
+                energy_data = await self._fetch_timeseries_moment("energy-tariff")
+                if energy_data:
+                    data["energy_price"] = energy_data
+
+                # 4. Fetch Signal Forecast
                 signal_forecast = await self._fetch_forecast("tariff-signal", hours=48)
                 
-                # 4. Calculate Sun Window info
+                # 5. Calculate Sun Window info
                 window_info = self._calculate_sun_window(signal_forecast)
                 data.update(window_info)
 
@@ -71,28 +73,41 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
         except aiohttp.ClientError as err:
             raise UpdateFailed(f"Error communicating with API: {err}")
 
-    def _extract_data_list(self, json_response: any) -> list:
-        """Robustly extract the list of data points from nested JSON."""
+    def _extract_data_list(self, json_response: any) -> tuple[list, str | None]:
+        """
+        Robustly extract data list AND unit from nested JSON.
+        Returns: (list_of_items, unit_string)
+        """
+        unit = None
+        items = []
+
         if isinstance(json_response, list):
-            return json_response
+            # Flat list, no unit info usually available at top level in this case
+            items = json_response
         
-        if isinstance(json_response, dict):
-            # Check for "Data" key which might contain the list or another object
+        elif isinstance(json_response, dict):
+            # Try to find Unit at top level
+            unit = json_response.get("Unit", json_response.get("unit"))
+            
+            # Level 1
             l1 = json_response.get("Data", json_response.get("data"))
             
             if isinstance(l1, list):
-                return l1
-            
-            if isinstance(l1, dict):
-                # Nested Data object (common in this API)
+                items = l1
+            elif isinstance(l1, dict):
+                # Level 2 (Nested Data object)
+                # Unit might be inside the first Data object
+                if not unit:
+                    unit = l1.get("Unit", l1.get("unit"))
+                
                 l2 = l1.get("Data", l1.get("data"))
                 if isinstance(l2, list):
-                    return l2
-                    
-        return []
+                    items = l2
+
+        return items, unit
 
     def _calculate_sun_window(self, forecast_list: list[dict] | None) -> dict:
-        """Analyze forecast to find Sun Window."""
+        """Analyze forecast to find Sun Window (Value = 1)."""
         result = {
             "sun_window_active": False,
             "next_sun_start": None,
@@ -103,35 +118,25 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
         if not forecast_list:
             return result
         
-        # BASED ON USER JSON: Value 1 is the Sun Window
         SUN_WINDOW_VALUE = 1
 
-        # 1. Current State (First item is 'now')
         current_item = forecast_list[0]
         current_val = current_item.get("v")
         result["tariff_signal_now"] = current_item
         
-        # Check if currently active
         is_active = (current_val == SUN_WINDOW_VALUE)
         result["sun_window_active"] = is_active
 
-        # 2. Find Start/End
         if is_active:
-            # Currently Active: Start is Now
             result["next_sun_start"] = current_item.get("t")
-            
-            # Find End: Look for first item that is NOT 1
             for item in forecast_list:
                 if item.get("v") != SUN_WINDOW_VALUE:
                     result["next_sun_end"] = item.get("t")
                     break
         else:
-            # Currently Inactive: Find next Start (First occurrence of 1)
             for i, item in enumerate(forecast_list):
                 if item.get("v") == SUN_WINDOW_VALUE:
                     result["next_sun_start"] = item.get("t")
-                    
-                    # From here, find the End (First occurrence of NOT 1 after Start)
                     for sub_item in forecast_list[i:]:
                         if sub_item.get("v") != SUN_WINDOW_VALUE:
                             result["next_sun_end"] = sub_item.get("t")
@@ -140,39 +145,58 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
             
         return result
 
-    def _normalize_data(self, item: dict) -> dict:
-        """Normalize API keys (Value -> v, etc)."""
+    def _normalize_data(self, item: dict, unit: str | None = None) -> dict:
+        """Normalize keys and convert unit if necessary."""
         if not item: return item
+        
         if "Value" in item: item["v"] = item["Value"]
         if "Flag" in item: item["f"] = item["Flag"]
         if "From" in item: item["t"] = item["From"]
+        
+        # Convert Cent/kWh to EUR/kWh
+        # We assume if no unit is given, it's already correct or unknown.
+        # But specifically check for "Cent" (case insensitive)
+        if unit and "cent" in unit.lower() and item.get("v") is not None:
+             try:
+                 item["v"] = float(item["v"]) / 100.0
+             except (ValueError, TypeError):
+                 pass
+
         return item
 
     async def _discover_timeseries_names(self):
-        """Query 'selected-data' to find correct timeseries names."""
+        """Find correct timeseries names."""
         url = f"{API_BASE_URL}/{self.api_key}/timeseriescollections/selected-data"
         params = {"from": "today", "to": "today+1d"}
         try:
             async with self.session.get(url, params=params) as response:
                 if response.status == 200:
                     json_data = await response.json()
-                    items = self._extract_data_list(json_data)
+                    # Just need items here, unit doesn't matter for discovery
+                    items, _ = self._extract_data_list(json_data)
                     
                     for item in items:
                         name = item.get("Name", item.get("name", ""))
-                        if "tariff-signal" in name: 
+                        lower_name = name.lower()
+                        
+                        if "tariff-signal" in lower_name: 
                             self.resolved_names["tariff-signal"] = name
-                        if "innonet-tariff" in name: 
+                        
+                        if "innonet-tariff" in lower_name: 
                             self.resolved_names["innonet-tariff"] = name
+                            
+                        # Find Public Energy Tariff (excluding Fee and Vat)
+                        if "public-energy-tariff" in lower_name and "fee" not in lower_name and "vat" not in lower_name:
+                             self.resolved_names["energy-tariff"] = name
+                             
         except Exception:
             pass
 
     async def _fetch_timeseries_moment(self, type_prefix: str) -> dict | None:
-        """Fetch current single value."""
+        """Fetch current single value with unit conversion."""
         ts_name = self.resolved_names.get(type_prefix, f"{type_prefix}-{self.zpn}")
         url = f"{API_BASE_URL}/{self.api_key}/timeseries/{ts_name}/data"
         
-        # Manual query string construction for %2B encoding
         params_str = "from=now[15m&to=now[15m%2B15m&interval=Minute&intervalMultiplier=15&aggregation=AtTheMoment"
         full_url = f"{url}?{params_str}"
         
@@ -180,9 +204,9 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
             async with self.session.get(full_url) as response:
                 if response.status == 200:
                     json_data = await response.json()
-                    items = self._extract_data_list(json_data)
+                    items, unit = self._extract_data_list(json_data)
                     if items: 
-                        return self._normalize_data(items[0])
+                        return self._normalize_data(items[0], unit)
         except Exception:
             pass
         return None
@@ -195,7 +219,6 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
         ts_name = self.resolved_names.get(type_prefix, f"{type_prefix}-{self.zpn}")
         url = f"{API_BASE_URL}/{self.api_key}/timeseries/{ts_name}/data"
         
-        # Manual query string construction
         params_str = f"from=now[15m&to=now[15m%2B{hours}h&interval=Minute&intervalMultiplier=15&aggregation=AtTheMoment"
         full_url = f"{url}?{params_str}"
         
@@ -203,9 +226,9 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
             async with self.session.get(full_url) as response:
                 if response.status == 200:
                     json_data = await response.json()
-                    items = self._extract_data_list(json_data)
+                    items, unit = self._extract_data_list(json_data)
                     if items: 
-                        return [self._normalize_data(i) for i in items]
+                        return [self._normalize_data(i, unit) for i in items]
         except Exception:
             pass
         return []
