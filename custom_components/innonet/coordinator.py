@@ -53,10 +53,15 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
                 if grid_data:
                     data["grid_price"] = grid_data
 
-                # 3. Fetch Energy Price (public-energy-tariff)
-                energy_data = await self._fetch_timeseries_moment("energy-tariff")
-                if energy_data:
-                    data["energy_price"] = energy_data
+                # 3. Fetch Energy Price Components (Base + Fee + Vat)
+                # We fetch all three parts to sum them up precisely
+                energy_base = await self._fetch_timeseries_moment("energy-base")
+                energy_fee = await self._fetch_timeseries_moment("energy-fee")
+                energy_vat = await self._fetch_timeseries_moment("energy-vat")
+                
+                if energy_base: data["energy_base"] = energy_base
+                if energy_fee: data["energy_fee"] = energy_fee
+                if energy_vat: data["energy_vat"] = energy_vat
 
                 # 4. Fetch Signal Forecast
                 signal_forecast = await self._fetch_forecast("tariff-signal", hours=48)
@@ -82,21 +87,16 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
         items = []
 
         if isinstance(json_response, list):
-            # Flat list, no unit info usually available at top level in this case
             items = json_response
         
         elif isinstance(json_response, dict):
-            # Try to find Unit at top level
             unit = json_response.get("Unit", json_response.get("unit"))
             
-            # Level 1
             l1 = json_response.get("Data", json_response.get("data"))
             
             if isinstance(l1, list):
                 items = l1
             elif isinstance(l1, dict):
-                # Level 2 (Nested Data object)
-                # Unit might be inside the first Data object
                 if not unit:
                     unit = l1.get("Unit", l1.get("unit"))
                 
@@ -154,8 +154,6 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
         if "From" in item: item["t"] = item["From"]
         
         # Convert Cent/kWh to EUR/kWh
-        # We assume if no unit is given, it's already correct or unknown.
-        # But specifically check for "Cent" (case insensitive)
         if unit and "cent" in unit.lower() and item.get("v") is not None:
              try:
                  item["v"] = float(item["v"]) / 100.0
@@ -172,7 +170,6 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
             async with self.session.get(url, params=params) as response:
                 if response.status == 200:
                     json_data = await response.json()
-                    # Just need items here, unit doesn't matter for discovery
                     items, _ = self._extract_data_list(json_data)
                     
                     for item in items:
@@ -185,9 +182,14 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
                         if "innonet-tariff" in lower_name: 
                             self.resolved_names["innonet-tariff"] = name
                             
-                        # Find Public Energy Tariff (excluding Fee and Vat)
-                        if "public-energy-tariff" in lower_name and "fee" not in lower_name and "vat" not in lower_name:
-                             self.resolved_names["energy-tariff"] = name
+                        # Discover Energy Tariff Components
+                        if "public-energy-tariff" in lower_name:
+                             if "fee" in lower_name:
+                                 self.resolved_names["energy-fee"] = name
+                             elif "vat" in lower_name:
+                                 self.resolved_names["energy-vat"] = name
+                             else:
+                                 self.resolved_names["energy-base"] = name
                              
         except Exception:
             pass

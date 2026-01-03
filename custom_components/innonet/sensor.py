@@ -27,6 +27,7 @@ async def async_setup_entry(
     entities = [
         InnonetGridPriceSensor(coordinator, entry),
         InnonetEnergyPriceSensor(coordinator, entry),
+        InnonetTotalPriceSensor(coordinator, entry),
         InnonetTariffSignalSensor(coordinator, entry),
         InnonetNextSunWindowStartSensor(coordinator, entry),
         InnonetNextSunWindowEndSensor(coordinator, entry),
@@ -63,7 +64,6 @@ class InnonetGridPriceSensor(InnonetBaseSensor):
     @property
     def native_value(self) -> float | None:
         data = self.coordinator.data.get("grid_price")
-        # Coordinator auto-converts Cent/kWh to EUR/kWh
         if data and "v" in data:
             return data["v"]
         return None
@@ -74,7 +74,7 @@ class InnonetGridPriceSensor(InnonetBaseSensor):
 
 
 class InnonetEnergyPriceSensor(InnonetBaseSensor):
-    """Sensor for Energy Price (Energiekosten) incl. VAT."""
+    """Sensor for Energy Price (Energiekosten = Base + Fee + Vat)."""
     
     def __init__(self, coordinator, entry):
         super().__init__(coordinator, entry)
@@ -87,19 +87,59 @@ class InnonetEnergyPriceSensor(InnonetBaseSensor):
 
     @property
     def native_value(self) -> float | None:
-        data = self.coordinator.data.get("energy_price")
-        if data and "v" in data:
-            val = data["v"]
-            # Add 20% VAT to get the Gross price (e.g. 0.1545 -> 0.1854)
-            try:
-                return round(float(val) * 1.2, 5)
-            except (ValueError, TypeError):
-                return val
+        # Summing up Base + Fee + Vat
+        base = self.coordinator.data.get("energy_base", {}).get("v", 0) or 0
+        fee = self.coordinator.data.get("energy_fee", {}).get("v", 0) or 0
+        vat = self.coordinator.data.get("energy_vat", {}).get("v", 0) or 0
+        
+        total = float(base) + float(fee) + float(vat)
+        
+        # Only return a value if at least one component is present (to avoid 0 if API fails completely)
+        if self.coordinator.data.get("energy_base") or self.coordinator.data.get("energy_fee"):
+            return round(total, 5)
+            
         return None
 
     @property
     def extra_state_attributes(self) -> dict[str, any]:
-        return self.coordinator.data.get("energy_price", {})
+        return {
+            "base_price": self.coordinator.data.get("energy_base", {}).get("v"),
+            "fee": self.coordinator.data.get("energy_fee", {}).get("v"),
+            "vat": self.coordinator.data.get("energy_vat", {}).get("v")
+        }
+
+
+class InnonetTotalPriceSensor(InnonetBaseSensor):
+    """Sensor for Total Price (Grid + Energy)."""
+    
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry)
+        self._attr_unique_id = f"{entry.data['zpn']}_total_price"
+        self._attr_name = "Total Price"
+        self._attr_icon = "mdi:cash-multiple"
+        self._attr_native_unit_of_measurement = "EUR/kWh"
+        self._attr_device_class = None
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+
+    @property
+    def native_value(self) -> float | None:
+        # Get Grid Price
+        grid_data = self.coordinator.data.get("grid_price")
+        grid = grid_data.get("v", 0) if grid_data else 0
+        
+        # Get Energy Price Components
+        base = self.coordinator.data.get("energy_base", {}).get("v", 0) or 0
+        fee = self.coordinator.data.get("energy_fee", {}).get("v", 0) or 0
+        vat = self.coordinator.data.get("energy_vat", {}).get("v", 0) or 0
+        
+        total_energy = float(base) + float(fee) + float(vat)
+        total_all = float(grid) + total_energy
+        
+        # Return only if we have at least some data
+        if grid_data or self.coordinator.data.get("energy_base"):
+            return round(total_all, 5)
+            
+        return None
 
 
 class InnonetTariffSignalSensor(InnonetBaseSensor):
