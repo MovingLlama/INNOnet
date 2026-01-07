@@ -9,7 +9,7 @@ API_BASE_URL = "https://app-innonnetwebtsm-dev.azurewebsites.net/api/extensions/
 
 # Update interval in minutes.
 # Documentation requires > 5 minutes to avoid overload.
-UPDATE_INTERVAL_MINUTES = 15
+UPDATE_INTERVAL_MINUTES = 5
 
 # Sensor types
 SENSOR_TARIFF_SIGNAL = "tariff_signal"
