@@ -2,19 +2,21 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
+from datetime import timedelta, datetime
 
 import aiohttp
 import async_timeout
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
     UpdateFailed,
 )
 from homeassistant.const import CONF_API_KEY
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.util import dt as dt_util
+from homeassistant.helpers.event import async_track_point_in_time
 
 from .const import DOMAIN, API_BASE_URL, CONF_ZPN, UPDATE_INTERVAL_MINUTES
 
@@ -30,6 +32,9 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
         self.zpn = entry.data[CONF_ZPN]
         self.session = async_get_clientsession(hass)
         self.resolved_names: dict[str, str] = {}
+        
+        # Variable für den Timer-Handle (zum Abbrechen alter Timer)
+        self._unsub_scheduled_update = None
 
         super().__init__(
             hass,
@@ -73,10 +78,74 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
                 if not data:
                     raise UpdateFailed("No data received from INNOnet API.")
 
+                # Wenn wir hier sind, war das Update erfolgreich.
+                # Wir planen das nächste exakte Update basierend auf den Sun-Window-Zeiten.
+                self._schedule_sun_window_update(data)
+
                 return data
 
-        except aiohttp.ClientError as err:
+        except (aiohttp.ClientError, Exception) as err:
+            # Wenn wir bereits Daten haben, behalten wir diese bei, anstatt abzustürzen.
+            # Das löst das Problem mit den "unknown" Werten bei instabiler API.
+            if self.data:
+                _LOGGER.warning(
+                    "Fehler beim Abruf der INNOnet Daten: %s. Verwende zwischengespeicherte Daten.", 
+                    err
+                )
+                return self.data
+            
+            # Nur wenn wir gar keine Daten haben, werfen wir den Fehler weiter
             raise UpdateFailed(f"Error communicating with API: {err}")
+
+    def _schedule_sun_window_update(self, data: dict):
+        """Schedule an update exactly at the next sun window start or end."""
+        # Vorherigen Timer löschen, falls vorhanden
+        if self._unsub_scheduled_update:
+            self._unsub_scheduled_update()
+            self._unsub_scheduled_update = None
+
+        now = dt_util.now()
+        target_times = []
+
+        # Prüfe Startzeit
+        if start_str := data.get("next_sun_start"):
+            try:
+                start_dt = dt_util.parse_datetime(str(start_str))
+                if start_dt and start_dt > now:
+                    target_times.append(start_dt)
+            except (ValueError, TypeError):
+                pass
+
+        # Prüfe Endzeit
+        if end_str := data.get("next_sun_end"):
+            try:
+                end_dt = dt_util.parse_datetime(str(end_str))
+                if end_dt and end_dt > now:
+                    target_times.append(end_dt)
+            except (ValueError, TypeError):
+                pass
+
+        if not target_times:
+            return
+
+        # Nächsten Zeitpunkt finden
+        next_update = min(target_times)
+        
+        # Sicherheitsabstand von 2 Sekunden, damit die API sicher umgeschaltet hat
+        next_update += timedelta(seconds=2)
+
+        _LOGGER.debug("Plane exaktes Update für Sun-Window um: %s", next_update)
+        
+        self._unsub_scheduled_update = async_track_point_in_time(
+            self.hass, self._handle_scheduled_update, next_update
+        )
+
+    @callback
+    async def _handle_scheduled_update(self, now):
+        """Handle the scheduled update."""
+        _LOGGER.debug("Führe geplantes Sun-Window Update aus.")
+        self._unsub_scheduled_update = None
+        await self.async_request_refresh()
 
     def _extract_data_list(self, json_response: any) -> tuple[list, str | None]:
         """
