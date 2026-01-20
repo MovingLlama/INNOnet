@@ -132,7 +132,7 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
         next_update = min(target_times)
         
         # Sicherheitsabstand von 2 Sekunden, damit die API sicher umgeschaltet hat
-        next_update += timedelta(seconds=2)
+        next_update += timedelta(seconds=30)
 
         _LOGGER.debug("Plane exaktes Update für Sun-Window um: %s", next_update)
         
