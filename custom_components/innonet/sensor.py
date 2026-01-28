@@ -5,7 +5,7 @@ import logging
 from homeassistant.components.sensor import SensorEntity, SensorStateClass, SensorDeviceClass
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers.device_registry import DeviceInfo
-
+from homeassistant.const import CONF_API_KEY
 from .const import (
     DOMAIN, 
     PRICE_COMPONENT_BASE, 
@@ -18,7 +18,6 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(hass, entry, async_add_entities):
-    """Sensoren anlegen."""
     coordinator = hass.data[DOMAIN][entry.entry_id]
     
     if coordinator.data is None:
@@ -33,42 +32,36 @@ async def async_setup_entry(hass, entry, async_add_entities):
     if coordinator.data:
         for storage_key, info in coordinator.data.items():
             name = info["name"]
-            # Filter: Keine Signale und keine validierten Daten
             if name.startswith(SIGNAL_TARIFF) or name.startswith("validated-data"):
                 continue
-                
             entities.append(InnoNetServiceSensor(coordinator, storage_key, info, entry))
     
     async_add_entities(entities)
 
 class InnoNetBaseEntity(CoordinatorEntity):
-    """Basis-Klasse für die Geräte-Gruppierung."""
+    """Basis für alle INNOnet Entitäten."""
     def __init__(self, coordinator, entry):
         super().__init__(coordinator)
         self._entry = entry
-        # Identische DeviceInfo für alle Entitäten erzwingt die Gruppierung als ein Gerät
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
             name="INNOnet",
             manufacturer="INNOnet",
             model="Service API",
-            configuration_url="https://app-innonnetwebtsm-dev.azurewebsites.net/",
         )
 
 class InnoNetServiceSensor(InnoNetBaseEntity, SensorEntity):
-    """Sensoren für Einzelpreise (Energy, Grid, etc.)."""
+    """Sensoren für Preise mit Namens-Logik."""
     def __init__(self, coordinator, storage_key, info, entry):
         super().__init__(coordinator, entry)
         self._storage_key = storage_key
-        
         raw_name = info["name"]
         
-        # Spezielle Umbenennung für den Tariff-Sensor (Entfernen der langen ID)
+        # Spezielle Umbenennung für den Tariff-Sensor
         if raw_name.startswith("innonet-tariff-"):
             slug = "tariff"
             self._attr_name = "Innonet Tariff"
         else:
-            # Standard-Mapping für andere Sensoren
             slug = raw_name.replace("public-energy-", "").replace("innonet-", "").replace("-", "_").lower()
             self._attr_name = raw_name.replace("-", " ").title()
             
@@ -79,7 +72,6 @@ class InnoNetServiceSensor(InnoNetBaseEntity, SensorEntity):
         if "EUR" in unit or "Cent" in unit:
             self._attr_device_class = SensorDeviceClass.MONETARY
             self._attr_native_unit_of_measurement = unit
-            # 'total' erlaubt Langzeitstatistiken für Währungswerte ohne Fehler
             self._attr_state_class = SensorStateClass.TOTAL
         elif "kWh" in unit:
             self._attr_device_class = SensorDeviceClass.ENERGY
@@ -92,7 +84,7 @@ class InnoNetServiceSensor(InnoNetBaseEntity, SensorEntity):
         return self.coordinator.data.get(self._storage_key, {}).get("value")
 
 class InnoNetTotalPriceSensor(InnoNetBaseEntity, SensorEntity):
-    """Berechnet sensor.innonet_service_total_price."""
+    """Gesamtpreis-Sensor."""
     def __init__(self, coordinator, entry):
         super().__init__(coordinator, entry)
         self.entity_id = "sensor.innonet_service_total_price"
@@ -100,7 +92,6 @@ class InnoNetTotalPriceSensor(InnoNetBaseEntity, SensorEntity):
         self._attr_unique_id = f"innonet_total_p_{entry.entry_id}"
         self._attr_device_class = SensorDeviceClass.MONETARY
         self._attr_native_unit_of_measurement = "EUR/kWh"
-        # Ermöglicht Statistiken für den Gesamtpreis
         self._attr_state_class = SensorStateClass.TOTAL
 
     @property
@@ -116,12 +107,11 @@ class InnoNetTotalPriceSensor(InnoNetBaseEntity, SensorEntity):
                     val = float(item["value"])
                     total += (val / 100.0) if "Cent" in str(item["unit"]) else val
                     found = True
-                except (ValueError, TypeError):
-                    continue
+                except (ValueError, TypeError): continue
         return round(total, 4) if found else None
 
 class InnoNetSunWindowTimeSensor(InnoNetBaseEntity, SensorEntity):
-    """Nächstes Sonnenfenster Start/Ende."""
+    """Optimierte Zeit-Erkennung für das Sonnenfenster."""
     def __init__(self, coordinator, entry, mode):
         super().__init__(coordinator, entry)
         self._mode = mode
@@ -136,13 +126,36 @@ class InnoNetSunWindowTimeSensor(InnoNetBaseEntity, SensorEntity):
         for item in self.coordinator.data.values():
             if item["name"].startswith(SIGNAL_TARIFF):
                 series = item.get("time_series", [])
-                for point in series:
-                    try:
+                if not series: return None
+                
+                current_active = float(series[0].get("Value", 0)) >= 1.0
+                
+                # Modus "Start": Wann beginnt das nächste (oder übernächste) Fenster?
+                if self._mode == "start":
+                    # Wenn aktuell inaktiv, suche das nächste >= 1
+                    # Wenn aktuell aktiv, suche erst den Wechsel auf 0, dann wieder auf 1
+                    found_inactive = not current_active
+                    for point in series[1:]:
                         val = float(point.get("Value", 0))
-                        if (self._mode == "start" and val >= 1.0) or (self._mode == "end" and val < 1.0):
-                            from_time = point.get("From")
-                            if from_time:
-                                return datetime.fromisoformat(from_time.replace("Z", "+00:00"))
-                    except (ValueError, TypeError):
-                        continue
+                        if not found_inactive and val < 1.0:
+                            found_inactive = True
+                        elif found_inactive and val >= 1.0:
+                            return self._parse_time(point["From"])
+                            
+                # Modus "Ende": Wann endet das aktuelle (oder nächste) Fenster?
+                elif self._mode == "end":
+                    # Wenn aktuell aktiv, suche das nächste < 1
+                    # Wenn aktuell inaktiv, suche erst den Wechsel auf 1, dann wieder auf 0
+                    found_active = current_active
+                    for point in series[1:]:
+                        val = float(point.get("Value", 0))
+                        if not found_active and val >= 1.0:
+                            found_active = True
+                        elif found_active and val < 1.0:
+                            return self._parse_time(point["From"])
         return None
+
+    def _parse_time(self, date_str):
+        try:
+            return datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+        except Exception: return None

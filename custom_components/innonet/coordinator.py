@@ -42,8 +42,8 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
         await self.async_refresh()
 
     async def _async_update_data(self):
-        # Abruf für die aktuelle und die nächste Stunde, um Fensterwechsel zu erkennen
-        url = f"{BASE_URL}/{self.api_key}/timeseriescollections/selected-data?from=now[30m&to=now[30m%2B12h&interval=hour"
+        # Wir rufen 24 Stunden ab, um die nächsten Sonnenfenster zuverlässig zu finden
+        url = f"{BASE_URL}/{self.api_key}/timeseriescollections/selected-data?from=now[30m&to=now[30m%2B24h&interval=hour"
         
         try:
             async with async_timeout.timeout(20):
@@ -68,10 +68,9 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
             
             data_points = item.get("Data", {}).get("Data", [])
             if not data_points:
-                # Behalte alten Wert bei fehlenden Daten
                 val = self._persistent_values.get(storage_key, 0.0)
             else:
-                # Erster Wert ist die aktuelle Stunde
+                # Aktueller Wert
                 new_value = data_points[0].get("Value")
                 
                 # Nullwert-Schutz
@@ -86,7 +85,7 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
                 "unit": item.get("Data", {}).get("Unit"),
                 "name": name,
                 "id": sensor_id,
-                "time_series": data_points # Speichere Serie für Fenster-Logik
+                "time_series": data_points
             }
 
         return processed
