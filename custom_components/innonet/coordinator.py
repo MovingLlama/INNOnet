@@ -12,7 +12,7 @@ from .const import DOMAIN, BASE_URL, UPDATE_OFFSET_SECONDS, UPDATE_CRON_MINUTE
 
 _LOGGER = logging.getLogger(__name__)
 
-class InnoNetDataUpdateCoordinator(DataUpdateCoordinator):
+class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
     """Klasse zur Verwaltung des Datenabrufs von der INNOnet API."""
 
     def __init__(self, hass: HomeAssistant, entry):
@@ -27,7 +27,7 @@ class InnoNetDataUpdateCoordinator(DataUpdateCoordinator):
             hass,
             _LOGGER,
             name=DOMAIN,
-            update_interval=None, # Update-Intervall auf None, da wir manuell steuern
+            update_interval=None,
         )
 
         # Registriere den Timer für 10 Sekunden nach der vollen Stunde
@@ -45,12 +45,10 @@ class InnoNetDataUpdateCoordinator(DataUpdateCoordinator):
         await self.async_refresh()
 
     async def _async_update_data(self):
-        """Daten von der API abrufen. Wird beim Start und stündlich aufgerufen."""
-        # URL mit Zeitfilter für die aktuelle Stunde
+        """Daten von der API abrufen."""
+        # URL mit Zeitfilter für die aktuelle Stunde (now[30m bis +1h)
         url = f"{BASE_URL}/{self.api_key}/timeseriescollections/selected-data?from=now[30m&to=now[30m%2B1h&interval=hour"
         
-        _LOGGER.debug("Rufe Daten von API ab: %s", url)
-
         try:
             async with async_timeout.timeout(30):
                 async with aiohttp.ClientSession() as session:
@@ -61,7 +59,7 @@ class InnoNetDataUpdateCoordinator(DataUpdateCoordinator):
 
         except Exception as err:
             _LOGGER.error("API Fehler beim Abruf: %s", err)
-            raise UpdateFailed(f"Kommunikationsfehler mit INNOnet: {err}")
+            raise UpdateFailed(f"Kommunikationsfehler: {err}")
 
     def _process_data(self, raw_data):
         """Verarbeitet Daten und sichert Werte gegen 0-Einträge ab."""
@@ -75,7 +73,6 @@ class InnoNetDataUpdateCoordinator(DataUpdateCoordinator):
             try:
                 data_list = item.get("Data", {}).get("Data", [])
                 if not data_list:
-                    # Falls keine Daten kommen, versuchen wir den letzten bekannten Wert zu halten
                     val = self._persistent_values.get(storage_key, 0.0)
                 else:
                     new_value = data_list[0].get("Value")
