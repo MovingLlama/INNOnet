@@ -1,8 +1,11 @@
 """Sensor Plattform für INNOnet."""
+from datetime import datetime
+import logging
+
 from homeassistant.components.sensor import SensorEntity, SensorStateClass, SensorDeviceClass
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.helpers.device_registry import DeviceInfo
-from homeassistant.const import CONF_API_KEY
+
 from .const import (
     DOMAIN, 
     PRICE_COMPONENT_BASE, 
@@ -12,10 +15,13 @@ from .const import (
     SIGNAL_TARIFF
 )
 
+_LOGGER = logging.getLogger(__name__)
+
 async def async_setup_entry(hass, entry, async_add_entities):
+    """Sensoren anlegen."""
     coordinator = hass.data[DOMAIN][entry.entry_id]
     
-    # Sicherstellen, dass Daten da sind
+    # Sicherstellen, dass Daten vorhanden sind
     if coordinator.data is None:
         await coordinator.async_config_entry_first_refresh()
 
@@ -28,8 +34,12 @@ async def async_setup_entry(hass, entry, async_add_entities):
     # Dynamische Sensoren für Einzelpreise
     if coordinator.data:
         for storage_key, info in coordinator.data.items():
-            if not info["name"].startswith(SIGNAL_TARIFF):
-                entities.append(InnoNetServiceSensor(coordinator, storage_key, info, entry))
+            name = info["name"]
+            # Filter: Ignoriere Signale (für binary_sensor) und 'validated-data'
+            if name.startswith(SIGNAL_TARIFF) or name.startswith("validated-data"):
+                continue
+                
+            entities.append(InnoNetServiceSensor(coordinator, storage_key, info, entry))
     
     async_add_entities(entities)
 
@@ -51,7 +61,7 @@ class InnoNetServiceSensor(InnoNetBaseEntity, SensorEntity):
         super().__init__(coordinator, entry)
         self._storage_key = storage_key
         
-        # ID-Schema Mapping
+        # ID-Schema Mapping (innonet_service_...)
         raw_name = info["name"]
         slug = raw_name.replace("public-energy-", "").replace("innonet-", "").replace("-", "_").lower()
         self.entity_id = f"sensor.innonet_service_{slug}"
@@ -62,6 +72,7 @@ class InnoNetServiceSensor(InnoNetBaseEntity, SensorEntity):
         if "EUR" in unit or "Cent" in unit:
             self._attr_device_class = SensorDeviceClass.MONETARY
             self._attr_native_unit_of_measurement = unit
+            self._attr_state_class = None
         elif "kWh" in unit:
             self._attr_device_class = SensorDeviceClass.ENERGY
             self._attr_state_class = SensorStateClass.TOTAL_INCREASING
@@ -81,21 +92,28 @@ class InnoNetTotalPriceSensor(InnoNetBaseEntity, SensorEntity):
         self._attr_unique_id = f"innonet_total_p_{entry.entry_id}"
         self._attr_device_class = SensorDeviceClass.MONETARY
         self._attr_native_unit_of_measurement = "EUR/kWh"
+        self._attr_state_class = None
 
     @property
     def native_value(self):
         if not self.coordinator.data: return None
         total = 0.0
+        found = False
         for item in self.coordinator.data.values():
             name = item["name"]
+            # Nur Preis-relevante Komponenten summieren
             if (name.startswith(PRICE_COMPONENT_ENERGY_PREFIX) or 
                 name in [PRICE_COMPONENT_BASE, PRICE_COMPONENT_FEE, PRICE_COMPONENT_VAT]):
-                val = float(item["value"])
-                total += (val / 100.0) if "Cent" in str(item["unit"]) else val
-        return round(total, 4)
+                try:
+                    val = float(item["value"])
+                    total += (val / 100.0) if "Cent" in str(item["unit"]) else val
+                    found = True
+                except (ValueError, TypeError):
+                    continue
+        return round(total, 4) if found else None
 
 class InnoNetSunWindowTimeSensor(InnoNetBaseEntity, SensorEntity):
-    """Nächstes Sonnenfenster Start/Ende."""
+    """Nächstes Sonnenfenster Start/Ende Zeitpunkte."""
     def __init__(self, coordinator, entry, mode):
         super().__init__(coordinator, entry)
         self._mode = mode
@@ -107,13 +125,17 @@ class InnoNetSunWindowTimeSensor(InnoNetBaseEntity, SensorEntity):
     @property
     def native_value(self):
         if not self.coordinator.data: return None
-        # Suche nach dem tariff-signal item
         for item in self.coordinator.data.values():
             if item["name"].startswith(SIGNAL_TARIFF):
                 series = item.get("time_series", [])
-                # Logik zur Erkennung des nächsten Wechsels (vereinfacht)
                 for point in series:
-                    val = float(point.get("Value", 0))
-                    if (self._mode == "start" and val >= 1.0) or (self._mode == "end" and val < 1.0):
-                        return datetime.fromisoformat(point["From"].replace("Z", "+00:00"))
+                    try:
+                        val = float(point.get("Value", 0))
+                        # Suche nach dem nächsten Start (Wert >= 1) oder Ende (Wert < 1)
+                        if (self._mode == "start" and val >= 1.0) or (self._mode == "end" and val < 1.0):
+                            from_time = point.get("From")
+                            if from_time:
+                                return datetime.fromisoformat(from_time.replace("Z", "+00:00"))
+                    except (ValueError, TypeError):
+                        continue
         return None
