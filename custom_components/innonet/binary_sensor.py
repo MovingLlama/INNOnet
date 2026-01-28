@@ -17,7 +17,6 @@ async def async_setup_entry(hass, entry, async_add_entities):
     entities = []
     if coordinator.data:
         for storage_key, info in coordinator.data.items():
-            # Wir nutzen das Tarif-Signal für den Status des Sonnenfensters
             if info["name"].startswith(SIGNAL_TARIFF):
                 entities.append(InnoNetSunActiveSensor(coordinator, storage_key, entry))
             
@@ -28,17 +27,18 @@ class InnoNetSunActiveSensor(CoordinatorEntity, BinarySensorEntity):
     def __init__(self, coordinator, storage_key, entry):
         super().__init__(coordinator)
         self._storage_key = storage_key
-        # Exaktes ID Schema wie gewünscht
         self.entity_id = "binary_sensor.innonet_service_sun_window_active"
         self._attr_name = "Sun Window Active"
         self._attr_unique_id = f"innonet_sun_act_{entry.entry_id}"
         self._attr_device_class = BinarySensorDeviceClass.POWER
         
+        # Identische DeviceInfo wie in sensor.py für die Gruppierung
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
             name="INNOnet",
             manufacturer="INNOnet",
             model="Service API",
+            configuration_url="https://app-innonnetwebtsm-dev.azurewebsites.net/",
         )
 
     @property
