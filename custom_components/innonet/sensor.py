@@ -62,9 +62,17 @@ class InnoNetServiceSensor(InnoNetBaseEntity, SensorEntity):
         self._storage_key = storage_key
         
         raw_name = info["name"]
-        slug = raw_name.replace("public-energy-", "").replace("innonet-", "").replace("-", "_").lower()
+        
+        # Spezielle Umbenennung für den Tariff-Sensor (Entfernen der langen ID)
+        if raw_name.startswith("innonet-tariff-"):
+            slug = "tariff"
+            self._attr_name = "Innonet Tariff"
+        else:
+            # Standard-Mapping für andere Sensoren
+            slug = raw_name.replace("public-energy-", "").replace("innonet-", "").replace("-", "_").lower()
+            self._attr_name = raw_name.replace("-", " ").title()
+            
         self.entity_id = f"sensor.innonet_service_{slug}"
-        self._attr_name = raw_name.replace("-", " ").title()
         self._attr_unique_id = f"innonet_s_{info['id']}_{entry.entry_id}"
         
         unit = str(info["unit"])
