@@ -27,7 +27,7 @@ class InnoNetDataUpdateCoordinator(DataUpdateCoordinator):
             hass,
             _LOGGER,
             name=DOMAIN,
-            update_interval=None, # Steuerung erfolgt über den Timer unten
+            update_interval=None, # Update-Intervall auf None, da wir manuell steuern
         )
 
         # Registriere den Timer für 10 Sekunden nach der vollen Stunde
@@ -41,13 +41,15 @@ class InnoNetDataUpdateCoordinator(DataUpdateCoordinator):
     @callback
     async def _async_scheduled_update(self, _now=None):
         """Wird stündlich um :00:10 aufgerufen."""
-        _LOGGER.debug("Zeitgesteuertes Update wird ausgeführt")
+        _LOGGER.debug("Geplante stündliche Aktualisierung wird ausgeführt")
         await self.async_refresh()
 
     async def _async_update_data(self):
-        """Daten von der API abrufen."""
-        # URL mit dem Zeitfilter für die aktuelle Stunde (now[30m bis +1h)
+        """Daten von der API abrufen. Wird beim Start und stündlich aufgerufen."""
+        # URL mit Zeitfilter für die aktuelle Stunde
         url = f"{BASE_URL}/{self.api_key}/timeseriescollections/selected-data?from=now[30m&to=now[30m%2B1h&interval=hour"
+        
+        _LOGGER.debug("Rufe Daten von API ab: %s", url)
 
         try:
             async with async_timeout.timeout(30):
@@ -58,7 +60,7 @@ class InnoNetDataUpdateCoordinator(DataUpdateCoordinator):
                     return self._process_data(data)
 
         except Exception as err:
-            _LOGGER.error("API Fehler: %s", err)
+            _LOGGER.error("API Fehler beim Abruf: %s", err)
             raise UpdateFailed(f"Kommunikationsfehler mit INNOnet: {err}")
 
     def _process_data(self, raw_data):
@@ -73,20 +75,20 @@ class InnoNetDataUpdateCoordinator(DataUpdateCoordinator):
             try:
                 data_list = item.get("Data", {}).get("Data", [])
                 if not data_list:
-                    continue
-                
-                # Nimm den ersten verfügbaren Wert der Stunde
-                new_value = data_list[0].get("Value")
-                
-                # Nullwert-Schutz: Wenn 0, verwende den letzten gespeicherten gültigen Wert
-                if (new_value == 0 or new_value == 0.0):
-                    final_value = self._persistent_values.get(storage_key, 0.0)
+                    # Falls keine Daten kommen, versuchen wir den letzten bekannten Wert zu halten
+                    val = self._persistent_values.get(storage_key, 0.0)
                 else:
-                    self._persistent_values[storage_key] = new_value
-                    final_value = new_value
+                    new_value = data_list[0].get("Value")
+                    
+                    # Nullwert-Schutz: Wenn 0, verwende den letzten gespeicherten gültigen Wert
+                    if (new_value == 0 or new_value == 0.0):
+                        val = self._persistent_values.get(storage_key, 0.0)
+                    else:
+                        self._persistent_values[storage_key] = new_value
+                        val = new_value
                 
                 processed[storage_key] = {
-                    "value": final_value,
+                    "value": val,
                     "unit": item.get("Data", {}).get("Unit"),
                     "name": name,
                     "id": sensor_id

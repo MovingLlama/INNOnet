@@ -10,11 +10,11 @@ from .const import (
 )
 
 async def async_setup_entry(hass, entry, async_add_entities):
-    """Sensoren anlegen."""
+    """Sensoren anlegen und initialen Datenabruf beim Start erzwingen."""
     coordinator = hass.data[DOMAIN][entry.entry_id]
     
-    if not coordinator.data:
-        await coordinator.async_config_entry_first_refresh()
+    # Erzwingt den ersten Datenabruf direkt beim Start/Laden der Integration
+    await coordinator.async_config_entry_first_refresh()
 
     entities = []
     
@@ -67,6 +67,9 @@ class InnoNetTotalPriceSensor(CoordinatorEntity, SensorEntity):
         total = 0.0
         found = False
         
+        if not self.coordinator.data:
+            return None
+
         for item in self.coordinator.data.values():
             if item["name"] in [PRICE_COMPONENT_BASE, PRICE_COMPONENT_FEE, PRICE_COMPONENT_VAT]:
                 val = float(item["value"])
