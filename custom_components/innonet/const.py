@@ -1,16 +1,27 @@
-"""Constants for the INNOnet integration."""
+"""Konstanten für die INNOnet Integration."""
 
 DOMAIN = "innonet"
-CONF_ZPN = "zpn"
 
-# Base URL as per documentation
-# Structure: .../repositories/INNOnet-prod/apikey/{apiKey}/...
-API_BASE_URL = "https://app-innonnetwebtsm-dev.azurewebsites.net/api/extensions/timeseriesauthorization/repositories/INNOnet-prod/apikey"
+# Basis-URL für die API-Anfragen
+BASE_URL = "https://app-innonnetwebtsm-dev.azurewebsites.net/api/extensions/timeseriesauthorization/repositories/INNOnet-prod/apikey"
 
-# Update interval in minutes.
-# Documentation requires > 5 minutes to avoid overload.
-UPDATE_INTERVAL_MINUTES = 15
+# Endpunkt für die ausgewählten Zeitreihendaten
+ENDPOINT_SELECTED_DATA = "timeseriescollections/selected-data"
 
-# Sensor types
-SENSOR_TARIFF_SIGNAL = "tariff_signal"
-SENSOR_INNONET_TARIFF = "innonet_tariff"
+# Konfiguration für die zeitgesteuerte Aktualisierung (10 Sekunden nach der vollen Stunde)
+UPDATE_OFFSET_SECONDS = 10
+UPDATE_CRON_MINUTE = 0
+
+# Standardwerte für die Persistenz-Logik und Attribute
+ATTR_API_ID = "api_id"
+ATTR_INTERNAL_NAME = "internal_name"
+ATTR_LAST_VALID_VALUE = "last_valid_value"
+
+# Identifikatoren für die Preis-Additionen (Summenbildung)
+# Diese Namen entsprechen den "Name"-Feldern aus der API-Antwort
+PRICE_COMPONENT_BASE = "public-energy-tariff-cpid-LZA-tid-LZAPSP"
+PRICE_COMPONENT_FEE = "public-energy-tariff-cpid-LZA-tid-LZAPSP-Fee"
+PRICE_COMPONENT_VAT = "public-energy-tariff-cpid-LZA-tid-LZAPSP-Vat"
+
+# Name für den berechneten Gesamtpreis-Sensor
+CONF_TOTAL_PRICE_NAME = "Gesamtenergiepreis"
