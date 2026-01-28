@@ -1,6 +1,7 @@
 """Sensor Plattform für INNOnet."""
 from homeassistant.components.sensor import SensorEntity, SensorStateClass, SensorDeviceClass
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.helpers.device_registry import DeviceInfo
 from .const import (
     DOMAIN, 
     PRICE_COMPONENT_BASE, 
@@ -18,7 +19,7 @@ async def async_setup_entry(hass, entry, async_add_entities):
 
     entities = []
     for storage_key, info in coordinator.data.items():
-        entities.append(InnoNetSensor(coordinator, storage_key, info))
+        entities.append(InnoNetSensor(coordinator, storage_key, info, entry))
     
     entities.append(InnoNetTotalPriceSensor(coordinator, entry))
     async_add_entities(entities)
@@ -26,17 +27,26 @@ async def async_setup_entry(hass, entry, async_add_entities):
 class InnoNetSensor(CoordinatorEntity, SensorEntity):
     """Einzelner Sensor aus der API."""
 
-    def __init__(self, coordinator, storage_key, info):
+    def __init__(self, coordinator, storage_key, info, entry):
         super().__init__(coordinator)
         self._storage_key = storage_key
+        self._entry = entry
         self._attr_name = info["name"]
-        self._attr_unique_id = f"innonet_{info['id']}"
+        self._attr_unique_id = f"innonet_{info['id']}_{entry.entry_id}"
         self._attr_native_unit_of_measurement = info["unit"]
+        
+        # Geräteeigenschaften festlegen
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, entry.entry_id)},
+            name=entry.title,
+            manufacturer="INNOnet",
+            model="Tarif-API",
+        )
         
         unit = str(info["unit"])
         if "EUR" in unit or "Cent" in unit:
             self._attr_device_class = SensorDeviceClass.MONETARY
-            self._attr_state_class = SensorStateClass.MEASUREMENT
+            self._attr_state_class = None 
         elif "kWh" in unit:
             self._attr_device_class = SensorDeviceClass.ENERGY
             self._attr_state_class = SensorStateClass.TOTAL_INCREASING
@@ -51,11 +61,20 @@ class InnoNetTotalPriceSensor(CoordinatorEntity, SensorEntity):
 
     def __init__(self, coordinator, entry):
         super().__init__(coordinator)
+        self._entry = entry
         self._attr_name = CONF_TOTAL_PRICE_NAME
         self._attr_unique_id = f"innonet_total_price_{entry.entry_id}"
         self._attr_native_unit_of_measurement = "EUR/kWh"
         self._attr_device_class = SensorDeviceClass.MONETARY
-        self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_state_class = None
+
+        # Das gleiche Gerät wie die anderen Sensoren
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, entry.entry_id)},
+            name=entry.title,
+            manufacturer="INNOnet",
+            model="Tarif-API",
+        )
 
     @property
     def native_value(self):
