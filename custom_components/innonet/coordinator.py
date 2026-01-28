@@ -2,6 +2,7 @@
 import logging
 import async_timeout
 import aiohttp
+from datetime import datetime
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
@@ -13,10 +14,9 @@ from .const import DOMAIN, BASE_URL, UPDATE_OFFSET_SECONDS, UPDATE_CRON_MINUTE
 _LOGGER = logging.getLogger(__name__)
 
 class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
-    """Klasse zur Verwaltung des Datenabrufs von der INNOnet API."""
+    """Verwaltet den Datenabruf und die Persistenz."""
 
     def __init__(self, hass: HomeAssistant, entry):
-        """Initialisierung des Coordinators."""
         self.api_key = entry.data.get(CONF_API_KEY)
         self.entry = entry
         self._persistent_values = {}
@@ -28,6 +28,7 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
             update_interval=None,
         )
 
+        # Stündlicher Timer (10 Sek. nach voll)
         self._unsub_timer = async_track_time_change(
             hass,
             self._async_scheduled_update,
@@ -37,25 +38,25 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
 
     @callback
     async def _async_scheduled_update(self, _now=None):
-        """Wird stündlich um :00:10 aufgerufen."""
+        _LOGGER.debug("Geplantes Update um 10s nach der vollen Stunde")
         await self.async_refresh()
 
     async def _async_update_data(self):
-        """Daten von der API abrufen."""
-        url = f"{BASE_URL}/{self.api_key}/timeseriescollections/selected-data?from=now[30m&to=now[30m%2B1h&interval=hour"
+        # Abruf für die aktuelle und die nächste Stunde, um Fensterwechsel zu erkennen
+        url = f"{BASE_URL}/{self.api_key}/timeseriescollections/selected-data?from=now[30m&to=now[30m%2B12h&interval=hour"
         
         try:
-            async with async_timeout.timeout(15):
+            async with async_timeout.timeout(20):
                 async with aiohttp.ClientSession() as session:
                     response = await session.get(url)
                     response.raise_for_status()
                     data = await response.json()
                     return self._process_data(data)
         except Exception as err:
-            raise UpdateFailed(f"API Fehler: {err}")
+            _LOGGER.error("API Fehler: %s", err)
+            raise UpdateFailed(f"Fehler beim Abruf: {err}")
 
     def _process_data(self, raw_data):
-        """Verarbeitet Daten und sichert Werte gegen 0-Einträge ab."""
         processed = {}
         if not raw_data:
             return processed
@@ -65,30 +66,31 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
             sensor_id = item.get("ID")
             storage_key = f"{name}_{sensor_id}"
             
-            try:
-                data_list = item.get("Data", {}).get("Data", [])
-                if not data_list:
+            data_points = item.get("Data", {}).get("Data", [])
+            if not data_points:
+                # Behalte alten Wert bei fehlenden Daten
+                val = self._persistent_values.get(storage_key, 0.0)
+            else:
+                # Erster Wert ist die aktuelle Stunde
+                new_value = data_points[0].get("Value")
+                
+                # Nullwert-Schutz
+                if new_value == 0 or new_value == 0.0:
                     val = self._persistent_values.get(storage_key, 0.0)
                 else:
-                    new_value = data_list[0].get("Value")
-                    if new_value == 0 or new_value == 0.0:
-                        val = self._persistent_values.get(storage_key, 0.0)
-                    else:
-                        self._persistent_values[storage_key] = new_value
-                        val = new_value
-                
-                processed[storage_key] = {
-                    "value": val,
-                    "unit": item.get("Data", {}).get("Unit"),
-                    "name": name,
-                    "id": sensor_id
-                }
-            except Exception:
-                continue
+                    self._persistent_values[storage_key] = new_value
+                    val = new_value
+            
+            processed[storage_key] = {
+                "value": val,
+                "unit": item.get("Data", {}).get("Unit"),
+                "name": name,
+                "id": sensor_id,
+                "time_series": data_points # Speichere Serie für Fenster-Logik
+            }
 
         return processed
 
     async def async_close(self):
-        """Ressourcen aufräumen."""
         if self._unsub_timer:
             self._unsub_timer()
