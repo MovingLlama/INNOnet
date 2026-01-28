@@ -1,8 +1,5 @@
-"""The INNOnet integration."""
-from __future__ import annotations
-
+"""Initialisierung der INNOnet Integration."""
 import logging
-
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
@@ -12,34 +9,36 @@ from .coordinator import InnonetDataUpdateCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
+# Liste der unterstützen Plattformen
+# Wir binden Sensor (für Preise/Daten) und Binary Sensor (für Signale) ein
 PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BINARY_SENSOR]
 
-
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up INNOnet from a config entry."""
-    
+    """Einrichten der Integration über einen Config Entry."""
+    _LOGGER.debug("Richte INNOnet Integration ein: %s", entry.title)
+
+    # Erstelle den DataUpdateCoordinator
+    # Dieser übernimmt ab jetzt das stündliche Update (10s nach Punkt) 
+    # sowie den Nullwert-Schutz.
     coordinator = InnonetDataUpdateCoordinator(hass, entry)
-    await coordinator.async_config_entry_first_refresh()
+    
+    # Speichere den Coordinator in hass.data, damit Sensoren darauf zugreifen können
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
 
-    hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][entry.entry_id] = coordinator
-
+    # Leite das Setup an die Plattformen weiter
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-
-    # Listen for options/config updates to reload the integration
-    entry.async_on_unload(entry.add_update_listener(async_reload_entry))
 
     return True
 
-
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload a config entry."""
-    if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
-        hass.data[DOMAIN].pop(entry.entry_id)
+    """Entfernen eines Config Entries (z.B. beim Löschen oder Deaktivieren)."""
+    # Entlade alle registrierten Plattformen
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    
+    if unload_ok:
+        # Hole den Coordinator aus dem Speicher
+        coordinator = hass.data[DOMAIN].pop(entry.entry_id)
+        # Wichtig: Beende den Timer im Coordinator, damit keine Hintergrund-Updates mehr laufen
+        await coordinator.async_close()
 
     return unload_ok
-
-
-async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reload config entry."""
-    await hass.config_entries.async_reload(entry.entry_id)

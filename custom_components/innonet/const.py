@@ -2,8 +2,9 @@
 
 DOMAIN = "innonet"
 
-# Basis-URL für die API-Anfragen
+# Basis-URL für die API-Anfragen (beide Varianten für Kompatibilität)
 BASE_URL = "https://app-innonnetwebtsm-dev.azurewebsites.net/api/extensions/timeseriesauthorization/repositories/INNOnet-prod/apikey"
+API_BASE_URL = BASE_URL
 
 # Endpunkt für die ausgewählten Zeitreihendaten
 ENDPOINT_SELECTED_DATA = "timeseriescollections/selected-data"
