@@ -19,8 +19,6 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
         """Initialisierung des Coordinators."""
         self.api_key = entry.data.get(CONF_API_KEY)
         self.entry = entry
-        
-        # Speicher für persistente Werte (behält letzten Wert > 0)
         self._persistent_values = {}
 
         super().__init__(
@@ -30,7 +28,6 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
             update_interval=None,
         )
 
-        # Registriere den Timer für 10 Sekunden nach der vollen Stunde
         self._unsub_timer = async_track_time_change(
             hass,
             self._async_scheduled_update,
@@ -41,29 +38,27 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
     @callback
     async def _async_scheduled_update(self, _now=None):
         """Wird stündlich um :00:10 aufgerufen."""
-        _LOGGER.debug("Geplante stündliche Aktualisierung wird ausgeführt")
         await self.async_refresh()
 
     async def _async_update_data(self):
         """Daten von der API abrufen."""
-        # URL mit Zeitfilter für die aktuelle Stunde (now[30m bis +1h)
         url = f"{BASE_URL}/{self.api_key}/timeseriescollections/selected-data?from=now[30m&to=now[30m%2B1h&interval=hour"
         
         try:
-            async with async_timeout.timeout(30):
+            async with async_timeout.timeout(15):
                 async with aiohttp.ClientSession() as session:
                     response = await session.get(url)
                     response.raise_for_status()
                     data = await response.json()
                     return self._process_data(data)
-
         except Exception as err:
-            _LOGGER.error("API Fehler beim Abruf: %s", err)
-            raise UpdateFailed(f"Kommunikationsfehler: {err}")
+            raise UpdateFailed(f"API Fehler: {err}")
 
     def _process_data(self, raw_data):
         """Verarbeitet Daten und sichert Werte gegen 0-Einträge ab."""
         processed = {}
+        if not raw_data:
+            return processed
 
         for item in raw_data:
             name = item.get("Name")
@@ -76,9 +71,7 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
                     val = self._persistent_values.get(storage_key, 0.0)
                 else:
                     new_value = data_list[0].get("Value")
-                    
-                    # Nullwert-Schutz: Wenn 0, verwende den letzten gespeicherten gültigen Wert
-                    if (new_value == 0 or new_value == 0.0):
+                    if new_value == 0 or new_value == 0.0:
                         val = self._persistent_values.get(storage_key, 0.0)
                     else:
                         self._persistent_values[storage_key] = new_value
@@ -90,8 +83,7 @@ class InnonetDataUpdateCoordinator(DataUpdateCoordinator):
                     "name": name,
                     "id": sensor_id
                 }
-                
-            except (KeyError, IndexError, TypeError):
+            except Exception:
                 continue
 
         return processed
